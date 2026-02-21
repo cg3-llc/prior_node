@@ -99,6 +99,11 @@ Examples:
   const key = await ensureKey();
   const query = args._.join(" ");
   if (!query) { console.error("Usage: prior search <query> (or prior search --help)"); process.exit(1); }
+  if (query.trim().length < 10) {
+    console.error("Query too short (minimum 10 characters). Search for a specific error message or problem description.");
+    console.error("Example: prior search \"Cannot find module @tailwindcss/vite\"");
+    process.exit(1);
+  }
 
   const body = { query, context: { runtime: "cli" }, maxResults: args.maxResults || 3 };
   if (args.minQuality !== undefined) body.minQuality = parseFloat(args.minQuality);
