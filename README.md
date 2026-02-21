@@ -74,4 +74,4 @@ Run `prior <command> --help` for detailed options on any command.
 
 ## License
 
-MIT — CG3 LLC
+MIT — [CG3 LLC](https://cg3.io)
