@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.5] - 2026-02-22
+
+### Added
+- Stdin JSON support for `contribute` command — pipe JSON instead of using flags
+- Stdin JSON support for `feedback` command — pipe JSON with entryId and outcome
+- CLI flags override stdin values when both are provided
+- Updated help text for both commands with JSON templates, PowerShell and bash examples
+
 ## [0.2.4] - 2026-02-25
 
 ### Changed

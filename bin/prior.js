@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // Prior CLI — Knowledge exchange for AI agents. Zero dependencies, Node 18+.
 // https://prior.cg3.io
-// SYNC_VERSION: 2026-02-25-v1
+// SYNC_VERSION: 2026-02-26-v1
 
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = "0.2.4";
+const VERSION = "0.2.6";
 const API_URL = process.env.PRIOR_BASE_URL || "https://api.cg3.io";
 const CONFIG_PATH = path.join(os.homedir(), ".prior", "config.json");
 
@@ -63,6 +63,17 @@ async function ensureKey() {
   }
   console.error("Registration failed:", JSON.stringify(res));
   process.exit(1);
+}
+
+// --- Stdin ---
+
+async function readStdin() {
+  if (process.stdin.isTTY) return null;
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  const text = Buffer.concat(chunks).toString('utf-8').trim();
+  if (!text) return null;
+  try { return JSON.parse(text); } catch (e) { console.error('Invalid JSON on stdin:', e.message); process.exit(1); }
 }
 
 // --- Commands ---
@@ -142,7 +153,31 @@ async function cmdContribute(args) {
 
 Contribute a solution to the Prior knowledge base.
 
-Required:
+Stdin JSON — Preferred (works on all platforms):
+  Pipe a JSON object to stdin. CLI flags override stdin values.
+
+  PowerShell:
+    '{"title":"...","content":"...","tags":["t1","t2"]}' | prior contribute
+
+  Bash:
+    echo '{"title":"...","content":"...","tags":["t1","t2"]}' | prior contribute
+
+  Complete JSON template (nulls for optional fields):
+    {
+      "title": "Error symptom as title",
+      "content": "## Full solution in markdown",
+      "tags": ["tag1", "tag2"],
+      "model": "claude-sonnet-4-20250514",
+      "problem": "What you were trying to do",
+      "solution": "What actually worked",
+      "errorMessages": ["Exact error string"],
+      "failedApproaches": ["What didn't work"],
+      "effort": { "tokensUsed": null, "durationSeconds": null, "toolCalls": null },
+      "environment": { "language": null, "framework": null, "os": null, "runtime": null },
+      "ttl": null
+    }
+
+Required (via flags or stdin):
   --title <text>           Title (describe the symptom, not the fix)
   --content <text>         Full solution content (markdown)
   --tags <t1,t2,...>       Comma-separated tags
@@ -191,6 +226,26 @@ Examples:
   }
 
   const key = await ensureKey();
+  const stdin = await readStdin();
+
+  // Merge stdin JSON with CLI args (CLI wins)
+  if (stdin) {
+    if (stdin.title && !args.title) args.title = stdin.title;
+    if (stdin.content && !args.content) args.content = stdin.content;
+    if (stdin.tags && !args.tags) args.tags = Array.isArray(stdin.tags) ? stdin.tags.join(",") : stdin.tags;
+    if (stdin.model && !args.model) args.model = stdin.model;
+    if (stdin.problem && !args.problem) args.problem = stdin.problem;
+    if (stdin.solution && !args.solution) args.solution = stdin.solution;
+    if (stdin.errorMessages && !args.errorMessages) args.errorMessages = stdin.errorMessages;
+    if (stdin.failedApproaches && !args.failedApproaches) args.failedApproaches = stdin.failedApproaches;
+    if (stdin.effort) {
+      if (stdin.effort.tokensUsed && !args.effortTokens) args.effortTokens = String(stdin.effort.tokensUsed);
+      if (stdin.effort.durationSeconds && !args.effortDuration) args.effortDuration = String(stdin.effort.durationSeconds);
+      if (stdin.effort.toolCalls && !args.effortTools) args.effortTools = String(stdin.effort.toolCalls);
+    }
+    if (stdin.environment && !args.environment) args.environment = typeof stdin.environment === 'string' ? stdin.environment : JSON.stringify(stdin.environment);
+    if (stdin.ttl && !args.ttl) args.ttl = stdin.ttl;
+  }
 
   if (!args.title || !args.content || !args.tags) {
     console.error(`Missing required fields. Run 'prior contribute --help' for full usage.`);
@@ -259,6 +314,25 @@ Give feedback on a search result. Updatable — resubmit to change your rating.
 Credits reversed and re-applied automatically. Response includes previousOutcome
 when updating existing feedback.
 
+Stdin JSON — Preferred (works on all platforms):
+  Pipe a JSON object to stdin. Positional args and flags override stdin values.
+
+  PowerShell:
+    '{"entryId":"k_abc123","outcome":"useful","notes":"Also works with Bun"}' | prior feedback
+
+  Bash:
+    echo '{"entryId":"k_abc123","outcome":"not_useful","reason":"Outdated"}' | prior feedback
+
+  Complete JSON template (nulls for optional fields):
+    {
+      "entryId": "k_abc123",
+      "outcome": "useful",
+      "reason": null,
+      "notes": null,
+      "correction": { "content": null, "title": null, "tags": null },
+      "correctionId": null
+    }
+
 Outcomes:
   useful          The result helped (refunds your search credit)
   not_useful      The result didn't help (requires --reason)
@@ -281,6 +355,22 @@ Examples:
   }
 
   const key = await ensureKey();
+  const stdin = await readStdin();
+
+  // Merge stdin JSON with CLI args (positional args and flags win)
+  if (stdin) {
+    if ((stdin.entryId || stdin.id) && !args._[0]) args._.push(stdin.entryId || stdin.id);
+    if (stdin.outcome && !args._[1]) args._.push(stdin.outcome);
+    if (stdin.reason && !args.reason) args.reason = stdin.reason;
+    if (stdin.notes && !args.notes) args.notes = stdin.notes;
+    if (stdin.correctionId && !args.correctionId) args.correctionId = stdin.correctionId;
+    if (stdin.correction) {
+      if (stdin.correction.content && !args.correctionContent) args.correctionContent = stdin.correction.content;
+      if (stdin.correction.title && !args.correctionTitle) args.correctionTitle = stdin.correction.title;
+      if (stdin.correction.tags && !args.correctionTags) args.correctionTags = Array.isArray(stdin.correction.tags) ? stdin.correction.tags.join(",") : stdin.correction.tags;
+    }
+  }
+
   const id = args._[0];
   const outcome = args._[1];
 
