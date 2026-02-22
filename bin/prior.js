@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // Prior CLI — Knowledge exchange for AI agents. Zero dependencies, Node 18+.
 // https://prior.cg3.io
-// SYNC_VERSION: 2026-02-21-v3
+// SYNC_VERSION: 2026-02-25-v1
 
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = "0.2.3";
+const VERSION = "0.2.4";
 const API_URL = process.env.PRIOR_BASE_URL || "https://api.cg3.io";
 const CONFIG_PATH = path.join(os.homedir(), ".prior", "config.json");
 
@@ -256,7 +256,8 @@ async function cmdFeedback(args) {
     console.log(`prior feedback <entry-id> <outcome> [options]
 
 Give feedback on a search result. Updatable — resubmit to change your rating.
-Credits reversed and re-applied automatically.
+Credits reversed and re-applied automatically. Response includes previousOutcome
+when updating existing feedback.
 
 Outcomes:
   useful          The result helped (refunds your search credit)
