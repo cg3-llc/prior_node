@@ -255,7 +255,8 @@ async function cmdFeedback(args) {
   if (args.help) {
     console.log(`prior feedback <entry-id> <outcome> [options]
 
-Give feedback on a search result.
+Give feedback on a search result. Updatable — resubmit to change your rating.
+Credits reversed and re-applied automatically.
 
 Outcomes:
   useful          The result helped (refunds your search credit)
