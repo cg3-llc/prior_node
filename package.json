@@ -1,36 +1,36 @@
 {
-  "name": "@cg3/prior-node",
-  "version": "0.2.6",
-  "description": "CLI for Prior — knowledge exchange for AI agents. Search, contribute, and share solutions.",
-  "bin": {
-    "prior": "./bin/prior.js"
-  },
-  "files": [
-    "bin/prior.js",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "ai",
-    "agents",
-    "knowledge",
-    "cli",
-    "prior",
-    "search",
-    "llm",
-    "developer-tools"
-  ],
-  "author": "CG3 LLC",
-  "license": "MIT",
-  "homepage": "https://prior.cg3.io",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/cg3-llc/prior_node"
-  },
-  "scripts": {
-    "test": "node --test test/"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+    "name":  "@cg3/prior-node",
+    "version":  "0.2.7",
+    "description":  "CLI for Prior — knowledge exchange for AI agents. Search, contribute, and share solutions.",
+    "bin":  {
+                "prior":  "./bin/prior.js"
+            },
+    "files":  [
+                  "bin/prior.js",
+                  "README.md",
+                  "LICENSE"
+              ],
+    "keywords":  [
+                     "ai",
+                     "agents",
+                     "knowledge",
+                     "cli",
+                     "prior",
+                     "search",
+                     "llm",
+                     "developer-tools"
+                 ],
+    "author":  "CG3 LLC",
+    "license":  "MIT",
+    "homepage":  "https://prior.cg3.io",
+    "repository":  {
+                       "type":  "git",
+                       "url":  "https://github.com/cg3-llc/prior_node"
+                   },
+    "scripts":  {
+                    "test":  "node --test test/"
+                },
+    "engines":  {
+                    "node":  "\u003e=18.0.0"
+                }
 }

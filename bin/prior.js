@@ -226,7 +226,8 @@ Examples:
   }
 
   const key = await ensureKey();
-  const stdin = await readStdin();
+  // Only read stdin if required flags are missing (avoids hanging on empty pipe)
+  const stdin = (args.title && args.content && args.tags) ? null : await readStdin();
 
   // Merge stdin JSON with CLI args (CLI wins)
   if (stdin) {
@@ -355,7 +356,8 @@ Examples:
   }
 
   const key = await ensureKey();
-  const stdin = await readStdin();
+  // Only read stdin if positional args are missing (avoids hanging on empty pipe)
+  const stdin = (args._[0] && args._[1]) ? null : await readStdin();
 
   // Merge stdin JSON with CLI args (positional args and flags win)
   if (stdin) {
