@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = "0.2.9";
+const VERSION = "0.2.10";
 const API_URL = process.env.PRIOR_BASE_URL || "https://api.cg3.io";
 const CONFIG_PATH = path.join(os.homedir(), ".prior", "config.json");
 
@@ -49,7 +49,21 @@ async function ensureKey() {
   let key = getApiKey();
   if (key) return key;
 
-  console.error("No API key found. Auto-registering...");
+  // If --confirm-registration is not passed, refuse to auto-register
+  if (!process.argv.includes("--confirm-registration")) {
+    console.error("No API key found. Registration required.");
+    console.error("");
+    console.error("Prior needs to register with api.cg3.io to work.");
+    console.error("This sends your machine's hostname to identify the agent.");
+    console.error("");
+    console.error("To proceed, re-run with --confirm-registration:");
+    console.error("  prior --confirm-registration <command>");
+    console.error("");
+    console.error("Or set PRIOR_API_KEY to skip registration entirely.");
+    process.exit(1);
+  }
+
+  console.error("Registering with api.cg3.io...");
   const hostname = os.hostname().slice(0, 20).replace(/[^a-zA-Z0-9_-]/g, "");
   const res = await api("POST", "/v1/agents/register", {
     agentName: `cli-${hostname}`,
