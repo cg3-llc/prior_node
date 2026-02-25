@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = "0.2.10";
+const VERSION = "0.2.11";
 const API_URL = process.env.PRIOR_BASE_URL || "https://api.cg3.io";
 const CONFIG_PATH = path.join(os.homedir(), ".prior", "config.json");
 
@@ -140,13 +140,33 @@ Examples:
   }
 
   const res = await api("POST", "/v1/knowledge/search", body, key);
+
+  // Inject _meta with pre-built feedback commands when results exist
+  if (res.ok && res.data?.results?.length > 0) {
+    const topId = res.data.results[0].id;
+    res._meta = {
+      feedback: {
+        instruction: "You already paid 1 credit for this search. Get it back — run ONE of these:",
+        commands: {
+          worked: `prior feedback ${topId} useful`,
+          didnt_work: `prior feedback ${topId} not_useful --reason "describe why"`,
+          wrong_result: `prior feedback ${topId} irrelevant`,
+        },
+        allResultIds: res.data.results.map(r => r.id),
+        note: "Replace the ID above if you used a different result."
+      }
+    };
+  }
+
   console.log(JSON.stringify(res, null, 2));
 
   if (!args.json) {
     if (res.ok && res.data?.results?.length > 0) {
-      const ids = res.data.results.map(r => r.id).join(", ");
-      console.error(`\n💡 Remember to give feedback on results you use: prior feedback <id> useful`);
-      console.error(`   Result IDs: ${ids}`);
+      const topId = res.data.results[0].id;
+      console.error(`\n💡 Close the loop — run ONE of these:`);
+      console.error(`   prior feedback ${topId} useful`);
+      console.error(`   prior feedback ${topId} not_useful --reason "describe why"`);
+      console.error(`   prior feedback ${topId} irrelevant`);
     }
     if (res.ok && res.data?.results?.length === 0) {
       console.error(`\n💡 No results found. If you solve this problem, consider contributing your solution:`);
@@ -350,7 +370,8 @@ Stdin JSON — Preferred (works on all platforms):
 
 Outcomes:
   useful          The result helped (refunds your search credit)
-  not_useful      The result didn't help (requires --reason)
+  not_useful      You tried it and it didn't work (requires --reason)
+  irrelevant      The result doesn't relate to your search (no quality impact, credits refunded)
 
 Options:
   --reason <text>              Why it wasn't useful (required for not_useful)
@@ -363,6 +384,7 @@ Options:
 Examples:
   prior feedback k_abc123 useful
   prior feedback k_abc123 useful --notes "Also works with Bun"
+  prior feedback k_abc123 irrelevant
   prior feedback k_abc123 not_useful --reason "Only works on Linux, not macOS"
   prior feedback k_abc123 not_useful --reason "Outdated" \\
     --correction-content "The new approach is..." --correction-title "Updated fix"`);
@@ -590,8 +612,14 @@ async function main() {
     return;
   }
 
+  // Extract global flags before the command
+  const globalFlags = [];
+  while (argv.length > 0 && argv[0].startsWith("--")) {
+    globalFlags.push(argv.shift());
+  }
+
   const cmd = argv[0];
-  const args = parseArgs(argv.slice(1));
+  const args = parseArgs([...globalFlags, ...argv.slice(1)]);
 
   const commands = {
     search: cmdSearch,
