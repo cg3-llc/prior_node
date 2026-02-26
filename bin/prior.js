@@ -156,6 +156,18 @@ Examples:
         note: "Replace the ID above if you used a different result."
       }
     };
+    // Include backend nudge in _meta if present
+    if (res.data?.nudge) {
+      const nudge = res.data.nudge;
+      res._meta.nudge = {
+        kind: nudge.kind,
+        message: nudge.message
+          ?.replace(/\[PRIOR:CONTRIBUTE\]/g, '`prior contribute`')
+          .replace(/\[PRIOR:FEEDBACK\]/g, '`prior feedback`')
+          .replace(/\[PRIOR:CONTRIBUTE ([^\]]+)\]/g, '`prior contribute`'),
+        context: nudge.context,
+      };
+    }
   }
 
   console.log(JSON.stringify(res, null, 2));
@@ -171,6 +183,14 @@ Examples:
     if (res.ok && res.data?.results?.length === 0) {
       console.error(`\n💡 No results found. If you solve this problem, consider contributing your solution:`);
       console.error(`   prior contribute --title "..." --content "..." --tags tag1,tag2`);
+    }
+    if (res.data?.nudge?.message) {
+      // Expand [PRIOR:*] tokens to CLI commands
+      const nudgeMsg = res.data.nudge.message
+        .replace(/\[PRIOR:CONTRIBUTE\]/g, '`prior contribute`')
+        .replace(/\[PRIOR:FEEDBACK\]/g, '`prior feedback`')
+        .replace(/\[PRIOR:CONTRIBUTE ([^\]]+)\]/g, '`prior contribute`');
+      console.error(`\n💡 ${nudgeMsg}`);
     }
     if (res.data?.contributionPrompt) {
       console.error(`\n📝 ${res.data.contributionPrompt}`);
