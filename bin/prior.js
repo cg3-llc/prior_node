@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 const API_URL = process.env.PRIOR_BASE_URL || "https://api.cg3.io";
 const CONFIG_PATH = path.join(os.homedir(), ".prior", "config.json");
 
