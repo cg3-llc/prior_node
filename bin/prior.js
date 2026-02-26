@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = "0.2.11";
+const VERSION = "0.3.0";
 const API_URL = process.env.PRIOR_BASE_URL || "https://api.cg3.io";
 const CONFIG_PATH = path.join(os.homedir(), ".prior", "config.json");
 
@@ -284,7 +284,7 @@ Examples:
 
   if (!args.title || !args.content || !args.tags) {
     console.error(`Missing required fields. Run 'prior contribute --help' for full usage.`);
-    console.error(`\nRequired: --title, --content, --tags, --model`);
+    console.error(`\nRequired: --title, --content, --tags`);
     process.exit(1);
   }
 
