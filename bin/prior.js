@@ -9,6 +9,15 @@ const os = require("os");
 
 const VERSION = "0.3.1";
 const API_URL = process.env.PRIOR_BASE_URL || "https://api.cg3.io";
+
+/** Expand [PRIOR:*] tokens to CLI command syntax */
+function expandNudgeTokens(message) {
+  if (!message) return message;
+  return message
+    .replace(/\[PRIOR:CONTRIBUTE\]/g, '`prior contribute`')
+    .replace(/\[PRIOR:FEEDBACK\]/g, '`prior feedback`')
+    .replace(/\[PRIOR:CONTRIBUTE ([^\]]+)\]/g, '`prior contribute`');
+}
 const CONFIG_PATH = path.join(os.homedir(), ".prior", "config.json");
 
 // --- Config ---
@@ -161,10 +170,7 @@ Examples:
       const nudge = res.data.nudge;
       res._meta.nudge = {
         kind: nudge.kind,
-        message: nudge.message
-          ?.replace(/\[PRIOR:CONTRIBUTE\]/g, '`prior contribute`')
-          .replace(/\[PRIOR:FEEDBACK\]/g, '`prior feedback`')
-          .replace(/\[PRIOR:CONTRIBUTE ([^\]]+)\]/g, '`prior contribute`'),
+        message: expandNudgeTokens(nudge.message),
         context: nudge.context,
       };
     }
@@ -185,12 +191,7 @@ Examples:
       console.error(`   prior contribute --title "..." --content "..." --tags tag1,tag2`);
     }
     if (res.data?.nudge?.message) {
-      // Expand [PRIOR:*] tokens to CLI commands
-      const nudgeMsg = res.data.nudge.message
-        .replace(/\[PRIOR:CONTRIBUTE\]/g, '`prior contribute`')
-        .replace(/\[PRIOR:FEEDBACK\]/g, '`prior feedback`')
-        .replace(/\[PRIOR:CONTRIBUTE ([^\]]+)\]/g, '`prior contribute`');
-      console.error(`\n💡 ${nudgeMsg}`);
+      console.error(`\n💡 ${expandNudgeTokens(res.data.nudge.message)}`);
     }
     if (res.data?.contributionPrompt) {
       console.error(`\n📝 ${res.data.contributionPrompt}`);
@@ -664,4 +665,4 @@ async function main() {
 
 main().catch(err => { console.error("Error:", err.message); process.exit(1); });
 
-if (typeof module !== 'undefined') module.exports = { parseArgs };
+if (typeof module !== 'undefined') module.exports = { parseArgs, expandNudgeTokens };

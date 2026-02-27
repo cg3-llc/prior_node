@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const { execSync, spawnSync } = require('node:child_process');
 const path = require('node:path');
 
-const { parseArgs } = require('../bin/prior.js');
+const { parseArgs, expandNudgeTokens } = require('../bin/prior.js');
 const CLI = path.join(__dirname, '..', 'bin', 'prior.js');
 
 function run(args = '', input = null) {
@@ -342,5 +342,47 @@ describe('edge cases', () => {
   it('contribute tags string not array from stdin', () => {
     const r = run('contribute', { title: 'T', content: 'C', tags: 'already,a,string' });
     assert.ok(!r.stderr.includes('Missing required'));
+  });
+});
+
+// ============ expandNudgeTokens tests ============
+
+describe('expandNudgeTokens', () => {
+  it('expands [PRIOR:CONTRIBUTE] to prior contribute', () => {
+    assert.strictEqual(
+      expandNudgeTokens('Try [PRIOR:CONTRIBUTE] your fix.'),
+      'Try `prior contribute` your fix.'
+    );
+  });
+
+  it('expands [PRIOR:FEEDBACK] to prior feedback', () => {
+    assert.strictEqual(
+      expandNudgeTokens('Did it help? [PRIOR:FEEDBACK]'),
+      'Did it help? `prior feedback`'
+    );
+  });
+
+  it('expands parameterized contribute', () => {
+    assert.strictEqual(
+      expandNudgeTokens('[PRIOR:CONTRIBUTE problem="NPE" tags="kotlin"]'),
+      '`prior contribute`'
+    );
+  });
+
+  it('expands multiple tokens in one message', () => {
+    const result = expandNudgeTokens('[PRIOR:CONTRIBUTE] or [PRIOR:FEEDBACK]');
+    assert.ok(result.includes('`prior contribute`'));
+    assert.ok(result.includes('`prior feedback`'));
+    assert.ok(!result.includes('[PRIOR:'));
+  });
+
+  it('handles null/undefined gracefully', () => {
+    assert.strictEqual(expandNudgeTokens(null), null);
+    assert.strictEqual(expandNudgeTokens(undefined), undefined);
+  });
+
+  it('passes through message with no tokens unchanged', () => {
+    const msg = 'No tokens here.';
+    assert.strictEqual(expandNudgeTokens(msg), msg);
   });
 });
