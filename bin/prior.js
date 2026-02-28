@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Prior CLI — Knowledge exchange for AI agents. Zero dependencies, Node 18+.
 // https://prior.cg3.io
-// SYNC_VERSION: 2026-02-26-v1
+// SYNC_VERSION: 2026-02-27-v2
 
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const http = require("http");
+const crypto = require("crypto");
 
 const VERSION = "0.4.0";
 const API_URL = process.env.PRIOR_BASE_URL || "https://api.cg3.io";
@@ -26,14 +28,75 @@ function loadConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8")); } catch { return null; }
 }
 
+function saveConfig(data) {
+  const dir = path.dirname(CONFIG_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2));
+}
+
+function getAuth() {
+  // Check for OAuth tokens first, then API key
+  const config = loadConfig();
+  if (config?.tokens?.access_token) {
+    // Check if token is expired
+    if (config.tokens.expires_at && Date.now() < config.tokens.expires_at) {
+      return config.tokens.access_token;
+    }
+    // Token expired — will need refresh (handled in api())
+    return config.tokens.access_token;
+  }
+  return process.env.PRIOR_API_KEY || config?.apiKey || null;
+}
+
 function getApiKey() {
   return process.env.PRIOR_API_KEY || loadConfig()?.apiKey || null;
 }
 
 // --- HTTP ---
 
+async function refreshTokenIfNeeded() {
+  const config = loadConfig();
+  if (!config?.tokens?.refresh_token) return null;
+  if (config.tokens.expires_at && Date.now() < config.tokens.expires_at - 60000) return config.tokens.access_token;
+
+  // Refresh the token
+  try {
+    const res = await fetch(`${API_URL}/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: config.tokens.refresh_token,
+        client_id: config.tokens.client_id || "prior-cli",
+      }).toString(),
+    });
+    const data = await res.json();
+    if (data.access_token) {
+      config.tokens = {
+        ...config.tokens,
+        access_token: data.access_token,
+        refresh_token: data.refresh_token || config.tokens.refresh_token,
+        expires_at: Date.now() + (data.expires_in || 3600) * 1000,
+      };
+      saveConfig(config);
+      return data.access_token;
+    }
+  } catch (e) {
+    process.stderr.write(`Warning: Token refresh failed: ${e.message}\n`);
+  }
+  return null;
+}
+
 async function api(method, endpoint, body, key) {
-  const k = key || getApiKey();
+  let k = key || getAuth();
+
+  // Auto-refresh if using OAuth tokens
+  const config = loadConfig();
+  if (!key && config?.tokens?.access_token) {
+    const refreshed = await refreshTokenIfNeeded();
+    if (refreshed) k = refreshed;
+  }
+
   const res = await fetch(`${API_URL}${endpoint}`, {
     method,
     headers: {
@@ -49,11 +112,11 @@ async function api(method, endpoint, body, key) {
 
 // --- API Key Guard ---
 
-const API_KEY = getApiKey();
+const API_KEY = getAuth();
 
 function requireKey() {
   if (!API_KEY) {
-    process.stderr.write("Error: No API key configured. Get one at https://prior.cg3.io/account then set PRIOR_API_KEY\n");
+    process.stderr.write("Error: No auth configured. Run 'prior login' or set PRIOR_API_KEY\n");
     process.exit(1);
   }
   return API_KEY;
@@ -499,6 +562,182 @@ Show your current credit balance.`);
   console.log(JSON.stringify(res, null, 2));
 }
 
+// --- OAuth Login ---
+
+async function cmdLogin(args) {
+  if (args.help) {
+    console.log(`prior login
+
+Authenticate with Prior via browser. Opens a browser window to sign in
+with GitHub or Google, then stores OAuth tokens locally.
+
+This replaces the need to manually copy-paste API keys.`);
+    return;
+  }
+
+  // Generate PKCE code verifier + challenge
+  const codeVerifier = crypto.randomBytes(32).toString("base64url");
+  const codeChallenge = crypto.createHash("sha256").update(codeVerifier).digest("base64url");
+  const state = crypto.randomBytes(16).toString("hex");
+  const clientId = "prior-cli";
+
+  // Start localhost HTTP server to receive callback
+  return new Promise((resolve) => {
+    const server = http.createServer(async (req, res) => {
+      const url = new URL(req.url, "http://localhost");
+
+      if (url.pathname === "/callback") {
+        const code = url.searchParams.get("code");
+        const returnedState = url.searchParams.get("state");
+        const error = url.searchParams.get("error");
+
+        if (error) {
+          res.writeHead(200, { "Content-Type": "text/html" });
+          res.end("<html><body><h1>Login Failed</h1><p>You can close this window.</p></body></html>");
+          process.stderr.write(`Login failed: ${error}\n`);
+          server.close();
+          resolve();
+          return;
+        }
+
+        if (!code) {
+          res.writeHead(400, { "Content-Type": "text/html" });
+          res.end("<html><body><h1>Missing code</h1></body></html>");
+          server.close();
+          resolve();
+          return;
+        }
+
+        // Exchange code for tokens
+        try {
+          const tokenRes = await fetch(`${API_URL}/token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              grant_type: "authorization_code",
+              code,
+              redirect_uri: `http://127.0.0.1:${server.address().port}/callback`,
+              code_verifier: codeVerifier,
+              client_id: clientId,
+            }).toString(),
+          });
+          const tokenData = await tokenRes.json();
+
+          if (tokenData.access_token) {
+            const config = loadConfig() || {};
+            config.tokens = {
+              access_token: tokenData.access_token,
+              refresh_token: tokenData.refresh_token,
+              expires_at: Date.now() + (tokenData.expires_in || 3600) * 1000,
+              client_id: clientId,
+            };
+            saveConfig(config);
+
+            res.writeHead(200, { "Content-Type": "text/html" });
+            res.end("<html><body><h1>Login Successful!</h1><p>You can close this window and return to your terminal.</p></body></html>");
+            process.stderr.write("Login successful! OAuth tokens saved to ~/.prior/config.json\n");
+          } else {
+            res.writeHead(200, { "Content-Type": "text/html" });
+            res.end(`<html><body><h1>Login Failed</h1><p>${tokenData.error_description || tokenData.error || "Unknown error"}</p></body></html>`);
+            process.stderr.write(`Login failed: ${tokenData.error_description || tokenData.error}\n`);
+          }
+        } catch (e) {
+          res.writeHead(500, { "Content-Type": "text/html" });
+          res.end(`<html><body><h1>Error</h1><p>${e.message}</p></body></html>`);
+          process.stderr.write(`Login error: ${e.message}\n`);
+        }
+
+        server.close();
+        resolve();
+        return;
+      }
+
+      res.writeHead(404);
+      res.end();
+    });
+
+    server.listen(0, "127.0.0.1", () => {
+      const port = server.address().port;
+      const redirectUri = encodeURIComponent(`http://127.0.0.1:${port}/callback`);
+      const authorizeUrl = `${API_URL}/authorize?response_type=code&client_id=${clientId}&redirect_uri=${redirectUri}&code_challenge=${codeChallenge}&code_challenge_method=S256&state=${state}`;
+
+      process.stderr.write(`Opening browser for authentication...\n`);
+      process.stderr.write(`If the browser doesn't open, visit: ${authorizeUrl}\n`);
+
+      // Open browser (cross-platform)
+      const open = process.platform === "win32" ? "start" :
+                   process.platform === "darwin" ? "open" : "xdg-open";
+      require("child_process").exec(`${open} "${authorizeUrl}"`);
+    });
+
+    // Timeout after 5 minutes
+    setTimeout(() => {
+      process.stderr.write("Login timed out after 5 minutes.\n");
+      server.close();
+      resolve();
+    }, 5 * 60 * 1000);
+  });
+}
+
+async function cmdLogout(args) {
+  if (args.help) {
+    console.log(`prior logout
+
+Revoke OAuth tokens and clear local credentials.`);
+    return;
+  }
+
+  const config = loadConfig();
+  if (config?.tokens?.refresh_token) {
+    // Revoke refresh token
+    try {
+      await fetch(`${API_URL}/revoke`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ token: config.tokens.refresh_token }).toString(),
+      });
+    } catch (_) {}
+  }
+
+  if (config?.tokens) {
+    delete config.tokens;
+    saveConfig(config);
+  }
+
+  console.log("Logged out. OAuth tokens cleared.");
+}
+
+async function cmdWhoami(args) {
+  if (args.help) {
+    console.log(`prior whoami
+
+Show your current identity and authentication method.`);
+    return;
+  }
+
+  const config = loadConfig();
+  const hasTokens = !!config?.tokens?.access_token;
+  const hasApiKey = !!(process.env.PRIOR_API_KEY || config?.apiKey);
+
+  if (!hasTokens && !hasApiKey) {
+    console.log("Not authenticated. Run 'prior login' or set PRIOR_API_KEY.");
+    return;
+  }
+
+  const authMethod = hasTokens ? "OAuth" : "API Key";
+  const res = await api("GET", "/v1/agents/me");
+  if (res.ok && res.data) {
+    console.log(`Auth method: ${authMethod}`);
+    console.log(`Agent ID: ${res.data.agentId}`);
+    console.log(`Name: ${res.data.agentName}`);
+    if (res.data.email) console.log(`Email: ${res.data.email}`);
+    console.log(`Credits: ${res.data.credits}`);
+  } else {
+    console.log(`Auth method: ${authMethod}`);
+    console.log(`Status: ${res.error?.message || "Unable to verify identity"}`);
+  }
+}
+
 // --- Arg Parser (minimal, no dependencies) ---
 
 function parseArgs(argv) {
@@ -548,6 +787,9 @@ Commands:
   retract <id>             Retract your contribution
   status                   Show agent profile and stats
   credits                  Show credit balance
+  login                    Authenticate via browser (OAuth)
+  logout                   Revoke tokens and log out
+  whoami                   Show current identity
 
 Options:
   --help, -h               Show help (works on any command)
@@ -558,6 +800,7 @@ Environment:
   PRIOR_BASE_URL           API base URL (default: https://api.cg3.io)
 
 Quick start:
+  prior login
   prior search "Cannot find module @tailwindcss/vite"
   prior feedback k_abc123 useful
   prior contribute --help
@@ -594,6 +837,9 @@ async function main() {
     retract: cmdRetract,
     status: cmdStatus,
     credits: cmdCredits,
+    login: cmdLogin,
+    logout: cmdLogout,
+    whoami: cmdWhoami,
   };
 
   if (commands[cmd]) {
