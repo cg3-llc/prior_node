@@ -9,7 +9,7 @@ const os = require("os");
 const http = require("http");
 const crypto = require("crypto");
 
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 const API_URL = process.env.PRIOR_BASE_URL || "https://api.cg3.io";
 
 /** Expand [PRIOR:*] tokens to CLI command syntax */
