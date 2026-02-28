@@ -564,6 +564,62 @@ Show your current credit balance.`);
 
 // --- OAuth Login ---
 
+function loginPageHtml(status, message) {
+  const isSuccess = status === "success";
+  const iconColor = isSuccess ? "#34d399" : "#f87171";
+  const iconPath = isSuccess
+    ? '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/>'
+    : '<circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6"/><path d="M9 9l6 6"/>';
+  const title = isSuccess ? "Login Successful" : "Login Failed";
+  const glowColor = isSuccess ? "rgba(52, 211, 153, 0.25)" : "rgba(248, 113, 113, 0.25)";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title} - Prior</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',system-ui,-apple-system,sans-serif;font-size:.9375rem;line-height:1.6;background:#08090e;color:#e8eaf0;min-height:100vh;display:flex;align-items:center;justify-content:center;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+body::before{content:'';position:fixed;inset:0;z-index:-1;opacity:.015;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");pointer-events:none}
+body::after{content:'';position:fixed;top:-10%;left:50%;transform:translateX(-50%);width:80%;height:60%;background:radial-gradient(ellipse 80% 60% at 50% 0%,rgba(94,164,248,.07) 0%,transparent 70%);pointer-events:none;z-index:-1}
+.container{max-width:440px;width:100%;padding:0 20px;text-align:center;animation:fadeIn .4s cubic-bezier(.4,0,.2,1) forwards}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.logo{margin-bottom:32px;font-family:'Space Grotesk',system-ui,sans-serif;font-size:1.625rem;font-weight:700;letter-spacing:-.02em;color:#e8eaf0}
+.card{position:relative;background:linear-gradient(135deg,#101320,#161a28);border-radius:14px;border:1px solid #181c2c;padding:40px 32px;box-shadow:0 8px 30px rgba(0,0,0,.6)}
+.card::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:1px;background:linear-gradient(135deg,rgba(94,164,248,.3),rgba(56,240,208,.15));mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);mask-composite:exclude;-webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);-webkit-mask-composite:xor;pointer-events:none}
+.icon-circle{width:56px;height:56px;border-radius:50%;background:${isSuccess ? 'rgba(52,211,153,.12)' : 'rgba(248,113,113,.12)'};display:inline-flex;align-items:center;justify-content:center;margin-bottom:20px;box-shadow:0 0 20px ${glowColor}}
+.icon-circle svg{color:${iconColor}}
+h1{font-family:'Space Grotesk',system-ui,sans-serif;font-size:1.3125rem;font-weight:700;letter-spacing:-.02em;margin-bottom:8px;color:#e8eaf0}
+.message{color:#a8adc0;font-size:.8125rem;line-height:1.6}
+.hint{margin-top:20px;padding:12px 16px;background:rgba(8,9,14,.6);border-radius:10px;border:1px solid #181c2c;font-size:.75rem;color:#5e6580}
+.hint code{font-family:'Consolas','Courier New',monospace;color:#5ea4f8;font-size:.75rem}
+.footer{font-size:.75rem;color:#5e6580;margin-top:20px}
+.footer a{color:#5ea4f8;text-decoration:none}
+@media(max-width:480px){.card{padding:32px 20px}}
+@media(prefers-reduced-motion:reduce){.container{animation:none}}
+::selection{background:rgba(94,164,248,.4);color:inherit}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="logo">Prior</div>
+<div class="card">
+<div class="icon-circle"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconPath}</svg></div>
+<h1>${title}</h1>
+<p class="message">${message}</p>
+${isSuccess ? '<div class="hint">You can close this window and return to your terminal.</div>' : ''}
+</div>
+<p class="footer">&copy; 2026 CG3 LLC &middot; <a href="https://prior.cg3.io">prior.cg3.io</a></p>
+</div>
+</body>
+</html>`;
+}
+
 async function cmdLogin(args) {
   if (args.help) {
     console.log(`prior login
@@ -593,7 +649,7 @@ This replaces the need to manually copy-paste API keys.`);
 
         if (error) {
           res.writeHead(200, { "Content-Type": "text/html" });
-          res.end("<html><body><h1>Login Failed</h1><p>You can close this window.</p></body></html>");
+          res.end(loginPageHtml("error", `Authentication was denied or failed. You can close this window.`));
           process.stderr.write(`Login failed: ${error}\n`);
           server.close();
           resolve();
@@ -602,7 +658,7 @@ This replaces the need to manually copy-paste API keys.`);
 
         if (!code) {
           res.writeHead(400, { "Content-Type": "text/html" });
-          res.end("<html><body><h1>Missing code</h1></body></html>");
+          res.end(loginPageHtml("error", "No authorization code was received. Please try again."));
           server.close();
           resolve();
           return;
@@ -634,16 +690,16 @@ This replaces the need to manually copy-paste API keys.`);
             saveConfig(config);
 
             res.writeHead(200, { "Content-Type": "text/html" });
-            res.end("<html><body><h1>Login Successful!</h1><p>You can close this window and return to your terminal.</p></body></html>");
+            res.end(loginPageHtml("success", "You have been authenticated successfully. Your OAuth tokens have been saved locally."));
             process.stderr.write("Login successful! OAuth tokens saved to ~/.prior/config.json\n");
           } else {
             res.writeHead(200, { "Content-Type": "text/html" });
-            res.end(`<html><body><h1>Login Failed</h1><p>${tokenData.error_description || tokenData.error || "Unknown error"}</p></body></html>`);
+            res.end(loginPageHtml("error", tokenData.error_description || tokenData.error || "Unknown error"));
             process.stderr.write(`Login failed: ${tokenData.error_description || tokenData.error}\n`);
           }
         } catch (e) {
           res.writeHead(500, { "Content-Type": "text/html" });
-          res.end(`<html><body><h1>Error</h1><p>${e.message}</p></body></html>`);
+          res.end(loginPageHtml("error", e.message));
           process.stderr.write(`Login error: ${e.message}\n`);
         }
 
