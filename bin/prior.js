@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-const VERSION = "0.3.1";
+const VERSION = "0.4.0";
 const API_URL = process.env.PRIOR_BASE_URL || "https://api.cg3.io";
 
 /** Expand [PRIOR:*] tokens to CLI command syntax */
@@ -24,11 +24,6 @@ const CONFIG_PATH = path.join(os.homedir(), ".prior", "config.json");
 
 function loadConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8")); } catch { return null; }
-}
-
-function saveConfig(config) {
-  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
 }
 
 function getApiKey() {
@@ -52,40 +47,16 @@ async function api(method, endpoint, body, key) {
   try { return JSON.parse(text); } catch { return { ok: false, error: text }; }
 }
 
-// --- Auto-register ---
+// --- API Key Guard ---
 
-async function ensureKey() {
-  let key = getApiKey();
-  if (key) return key;
+const API_KEY = getApiKey();
 
-  // If --confirm-registration is not passed, refuse to auto-register
-  if (!process.argv.includes("--confirm-registration")) {
-    console.error("No API key found. Registration required.");
-    console.error("");
-    console.error("Prior needs to register with api.cg3.io to work.");
-    console.error("This sends your machine's hostname to identify the agent.");
-    console.error("");
-    console.error("To proceed, re-run with --confirm-registration:");
-    console.error("  prior --confirm-registration <command>");
-    console.error("");
-    console.error("Or set PRIOR_API_KEY to skip registration entirely.");
+function requireKey() {
+  if (!API_KEY) {
+    process.stderr.write("Error: No API key configured. Get one at https://prior.cg3.io/account then set PRIOR_API_KEY\n");
     process.exit(1);
   }
-
-  console.error("Registering with api.cg3.io...");
-  const hostname = os.hostname().slice(0, 20).replace(/[^a-zA-Z0-9_-]/g, "");
-  const res = await api("POST", "/v1/agents/register", {
-    agentName: `cli-${hostname}`,
-    host: "cli",
-  });
-
-  if (res.ok && res.data?.apiKey) {
-    saveConfig({ apiKey: res.data.apiKey, agentId: res.data.agentId });
-    console.error(`Registered as ${res.data.agentId}. Key saved to ${CONFIG_PATH}`);
-    return res.data.apiKey;
-  }
-  console.error("Registration failed:", JSON.stringify(res));
-  process.exit(1);
+  return API_KEY;
 }
 
 // --- Stdin ---
@@ -130,7 +101,7 @@ Examples:
     return;
   }
 
-  const key = await ensureKey();
+  const key = requireKey();
   const query = args._.join(" ");
   if (!query) { console.error("Usage: prior search <query> (or prior search --help)"); process.exit(1); }
   if (query.trim().length < 10) {
@@ -173,6 +144,14 @@ Examples:
         message: expandNudgeTokens(nudge.message),
         context: nudge.context,
       };
+      // Include previousResults with pre-built feedback commands
+      if (nudge.context?.previousResults?.length) {
+        res._meta.nudge.previousResults = nudge.context.previousResults.map(r => ({
+          id: r.id,
+          title: r.title,
+          feedbackCommand: `prior feedback ${r.id} useful`,
+        }));
+      }
     }
   }
 
@@ -192,6 +171,12 @@ Examples:
     }
     if (res.data?.nudge?.message) {
       console.error(`\n💡 ${expandNudgeTokens(res.data.nudge.message)}`);
+      if (res.data.nudge.context?.previousResults?.length) {
+        console.error(`   Results from that search:`);
+        for (const r of res.data.nudge.context.previousResults) {
+          console.error(`     prior feedback ${r.id} useful`);
+        }
+      }
     }
     if (res.data?.contributionPrompt) {
       console.error(`\n📝 ${res.data.contributionPrompt}`);
@@ -280,7 +265,7 @@ Examples:
     return;
   }
 
-  const key = await ensureKey();
+  const key = requireKey();
   // Only read stdin if required flags are missing (avoids hanging on empty pipe)
   const stdin = (args.title && args.content && args.tags) ? null : await readStdin();
 
@@ -412,7 +397,7 @@ Examples:
     return;
   }
 
-  const key = await ensureKey();
+  const key = requireKey();
   // Only read stdin if positional args are missing (avoids hanging on empty pipe)
   const stdin = (args._[0] && args._[1]) ? null : await readStdin();
 
@@ -463,7 +448,7 @@ Examples:
     return;
   }
 
-  const key = await ensureKey();
+  const key = requireKey();
   const id = args._[0];
   if (!id) { console.error("Usage: prior get <entry-id>"); process.exit(1); }
   const res = await api("GET", `/v1/knowledge/${id}`, null, key);
@@ -481,7 +466,7 @@ Examples:
     return;
   }
 
-  const key = await ensureKey();
+  const key = requireKey();
   const id = args._[0];
   if (!id) { console.error("Usage: prior retract <entry-id>"); process.exit(1); }
   const res = await api("DELETE", `/v1/knowledge/${id}`, null, key);
@@ -496,7 +481,7 @@ Show your agent profile, stats, and account status.`);
     return;
   }
 
-  const key = await ensureKey();
+  const key = requireKey();
   const res = await api("GET", "/v1/agents/me", null, key);
   console.log(JSON.stringify(res, null, 2));
 }
@@ -509,48 +494,9 @@ Show your current credit balance.`);
     return;
   }
 
-  const key = await ensureKey();
+  const key = requireKey();
   const res = await api("GET", "/v1/agents/me/credits", null, key);
   console.log(JSON.stringify(res, null, 2));
-}
-
-async function cmdClaim(args) {
-  if (args.help) {
-    console.log(`prior claim <email>
-
-Link your agent to a verified account. Required to contribute.
-Sends a 6-digit verification code to your email.
-
-Examples:
-  prior claim you@example.com`);
-    return;
-  }
-
-  const key = await ensureKey();
-  const email = args._[0];
-  if (!email) { console.error("Usage: prior claim <email>"); process.exit(1); }
-  const res = await api("POST", "/v1/agents/claim", { email }, key);
-  console.log(JSON.stringify(res, null, 2));
-  if (res.ok) console.error("\n📧 Check your email for a 6-digit code, then run: prior verify <code>");
-}
-
-async function cmdVerify(args) {
-  if (args.help) {
-    console.log(`prior verify <code>
-
-Complete the claim process with the 6-digit code from your email.
-
-Examples:
-  prior verify 483921`);
-    return;
-  }
-
-  const key = await ensureKey();
-  const code = args._[0];
-  if (!code) { console.error("Usage: prior verify <code>"); process.exit(1); }
-  const res = await api("POST", "/v1/agents/verify", { code }, key);
-  console.log(JSON.stringify(res, null, 2));
-  if (res.ok) console.error("\n✅ Agent claimed! Unlimited searches and contributions unlocked.");
 }
 
 // --- Arg Parser (minimal, no dependencies) ---
@@ -602,15 +548,13 @@ Commands:
   retract <id>             Retract your contribution
   status                   Show agent profile and stats
   credits                  Show credit balance
-  claim <email>            Start claiming your agent
-  verify <code>            Complete claim with verification code
 
 Options:
   --help, -h               Show help (works on any command)
   --json                   Suppress stderr nudges (stdout only)
 
 Environment:
-  PRIOR_API_KEY            API key (or auto-registers and saves to ~/.prior/config.json)
+  PRIOR_API_KEY            API key (get one at https://prior.cg3.io/account)
   PRIOR_BASE_URL           API base URL (default: https://api.cg3.io)
 
 Quick start:
@@ -650,8 +594,6 @@ async function main() {
     retract: cmdRetract,
     status: cmdStatus,
     credits: cmdCredits,
-    claim: cmdClaim,
-    verify: cmdVerify,
   };
 
   if (commands[cmd]) {

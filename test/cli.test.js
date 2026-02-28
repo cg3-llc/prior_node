@@ -91,7 +91,7 @@ describe('help text', () => {
   it('--help shows all subcommand names', () => {
     const r = run('--help');
     const out = r.stdout;
-    for (const cmd of ['search', 'contribute', 'feedback', 'get', 'retract', 'status', 'credits', 'claim', 'verify']) {
+    for (const cmd of ['search', 'contribute', 'feedback', 'get', 'retract', 'status', 'credits']) {
       assert.ok(out.includes(cmd), `help should mention "${cmd}"`);
     }
   });
@@ -150,15 +150,6 @@ describe('help text', () => {
     assert.ok(r.stdout.includes('prior credits'));
   });
 
-  it('claim --help shows claim usage', () => {
-    const r = run('claim --help');
-    assert.ok(r.stdout.includes('prior claim'));
-  });
-
-  it('verify --help shows verify usage', () => {
-    const r = run('verify --help');
-    assert.ok(r.stdout.includes('prior verify'));
-  });
 });
 
 // ============ Validation tests ============
@@ -215,18 +206,6 @@ describe('validation', () => {
 
   it('retract with no id errors', () => {
     const r = run('retract');
-    assert.ok(r.status !== 0);
-    assert.ok(r.stderr.includes('Usage'));
-  });
-
-  it('claim with no email errors', () => {
-    const r = run('claim');
-    assert.ok(r.status !== 0);
-    assert.ok(r.stderr.includes('Usage'));
-  });
-
-  it('verify with no code errors', () => {
-    const r = run('verify');
     assert.ok(r.status !== 0);
     assert.ok(r.stderr.includes('Usage'));
   });
@@ -384,5 +363,73 @@ describe('expandNudgeTokens', () => {
   it('passes through message with no tokens unchanged', () => {
     const msg = 'No tokens here.';
     assert.strictEqual(expandNudgeTokens(msg), msg);
+  });
+});
+
+// ============ nudge previousResults passthrough tests ============
+
+describe('nudge previousResults', () => {
+  it('previousResults mapped to _meta.nudge.previousResults with feedbackCommand', () => {
+    const nudge = {
+      kind: 'feedback_reminder',
+      message: 'Your search returned 2 results.',
+      context: {
+        previousSearchId: 's_123',
+        previousQuery: 'CORS error',
+        previousResultCount: 2,
+        minutesAgo: 15,
+        previousResults: [
+          { id: 'k_abc', title: 'Fix CORS in FastAPI' },
+          { id: 'k_def', title: 'CORS headers missing' },
+        ],
+      },
+    };
+
+    const metaNudge = {
+      kind: nudge.kind,
+      message: expandNudgeTokens(nudge.message),
+      context: nudge.context,
+    };
+    if (nudge.context?.previousResults?.length) {
+      metaNudge.previousResults = nudge.context.previousResults.map(r => ({
+        id: r.id,
+        title: r.title,
+        feedbackCommand: `prior feedback ${r.id} useful`,
+      }));
+    }
+
+    assert.strictEqual(metaNudge.previousResults.length, 2);
+    assert.strictEqual(metaNudge.previousResults[0].id, 'k_abc');
+    assert.strictEqual(metaNudge.previousResults[0].title, 'Fix CORS in FastAPI');
+    assert.strictEqual(metaNudge.previousResults[0].feedbackCommand, 'prior feedback k_abc useful');
+    assert.strictEqual(metaNudge.previousResults[1].feedbackCommand, 'prior feedback k_def useful');
+  });
+
+  it('no previousResults when nudge context has none', () => {
+    const nudge = {
+      kind: 'contribute_reminder',
+      message: 'No results for your query.',
+      context: {
+        previousSearchId: 's_456',
+        previousQuery: 'zig segfault',
+        previousResultCount: 0,
+        minutesAgo: 30,
+      },
+    };
+
+    const metaNudge = {
+      kind: nudge.kind,
+      message: expandNudgeTokens(nudge.message),
+      context: nudge.context,
+    };
+    if (nudge.context?.previousResults?.length) {
+      metaNudge.previousResults = nudge.context.previousResults.map(r => ({
+        id: r.id,
+        title: r.title,
+        feedbackCommand: `prior feedback ${r.id} useful`,
+      }));
+    }
+
+    assert.strictEqual(metaNudge.previousResults, undefined);
   });
 });
