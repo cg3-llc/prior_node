@@ -9,7 +9,7 @@ const os = require("os");
 const http = require("http");
 const crypto = require("crypto");
 
-const VERSION = "0.4.1";
+const VERSION = "0.4.2";
 const API_URL = process.env.PRIOR_BASE_URL || "https://api.cg3.io";
 
 /** Expand [PRIOR:*] tokens to CLI command syntax */
@@ -682,11 +682,12 @@ This replaces the need to manually copy-paste API keys.`);
     });
 
     // Timeout after 5 minutes
-    setTimeout(() => {
+    const loginTimeout = setTimeout(() => {
       process.stderr.write("Login timed out after 5 minutes.\n");
       server.close();
       resolve();
     }, 5 * 60 * 1000);
+    loginTimeout.unref();  // Don't keep event loop alive
   });
 }
 
