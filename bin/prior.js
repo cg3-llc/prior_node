@@ -647,6 +647,8 @@ This replaces the need to manually copy-paste API keys.`);
           process.stderr.write(`Login error: ${e.message}\n`);
         }
 
+        // Force-close the server (keep-alive connections prevent clean close)
+        server.closeAllConnections();
         server.close();
         resolve();
         return;
@@ -665,9 +667,18 @@ This replaces the need to manually copy-paste API keys.`);
       process.stderr.write(`If the browser doesn't open, visit: ${authorizeUrl}\n`);
 
       // Open browser (cross-platform)
-      const open = process.platform === "win32" ? "start" :
-                   process.platform === "darwin" ? "open" : "xdg-open";
-      require("child_process").exec(`${open} "${authorizeUrl}"`);
+      const openBrowser = (url) => {
+        const cp = require("child_process");
+        if (process.platform === "win32") {
+          // Windows: start "" "url" — first arg is window title, must be empty
+          cp.exec(`start "" "${url}"`).unref();
+        } else if (process.platform === "darwin") {
+          cp.exec(`open "${url}"`).unref();
+        } else {
+          cp.exec(`xdg-open "${url}"`).unref();
+        }
+      };
+      openBrowser(authorizeUrl);
     });
 
     // Timeout after 5 minutes
