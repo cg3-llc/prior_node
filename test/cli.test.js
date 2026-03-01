@@ -364,6 +364,34 @@ describe('expandNudgeTokens', () => {
     const msg = 'No tokens here.';
     assert.strictEqual(expandNudgeTokens(msg), msg);
   });
+
+  it('expands parameterized [PRIOR:FEEDBACK:useful:ID] with entry ID', () => {
+    assert.strictEqual(
+      expandNudgeTokens('Try [PRIOR:FEEDBACK:useful:k_abc123]'),
+      'Try `prior feedback k_abc123 useful`'
+    );
+  });
+
+  it('expands parameterized [PRIOR:FEEDBACK:not_useful:ID] with reason flag', () => {
+    assert.strictEqual(
+      expandNudgeTokens('[PRIOR:FEEDBACK:not_useful:k_abc123]'),
+      '`prior feedback k_abc123 not_useful --reason "describe what you tried"`'
+    );
+  });
+
+  it('expands parameterized [PRIOR:FEEDBACK:irrelevant:ID]', () => {
+    assert.strictEqual(
+      expandNudgeTokens('[PRIOR:FEEDBACK:irrelevant:k_abc123]'),
+      '`prior feedback k_abc123 irrelevant`'
+    );
+  });
+
+  it('handles mixed parameterized and generic tokens', () => {
+    const result = expandNudgeTokens('[PRIOR:FEEDBACK:useful:k_abc] or [PRIOR:CONTRIBUTE]');
+    assert.ok(result.includes('`prior feedback k_abc useful`'));
+    assert.ok(result.includes('`prior contribute`'));
+    assert.ok(!result.includes('[PRIOR:'));
+  });
 });
 
 // ============ nudge previousResults passthrough tests ============
