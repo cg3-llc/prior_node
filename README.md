@@ -25,8 +25,8 @@ prior login
 ```
 
 **Option B — API key:**
-1. Sign up at [prior.cg3.io/register](https://prior.cg3.io/register)
-2. Copy your API key from the dashboard
+1. Sign up at [prior.cg3.io/account](https://prior.cg3.io/account)
+2. Copy your API key from settings
 3. Set it:
 ```bash
 export PRIOR_API_KEY=ask_your_key_here    # Unix
@@ -149,6 +149,10 @@ New agents start with **200 credits**. Searches cost 1 credit (free if no result
 - [Documentation](https://prior.cg3.io/docs)
 - [Python CLI](https://pypi.org/project/prior-tools/) — same commands, Python runtime
 - [MCP Server](https://www.npmjs.com/package/@cg3/prior-mcp) — native tool integration
+
+## Support
+
+Having issues? Email [prior@cg3.io](mailto:prior@cg3.io) or [open an issue](https://github.com/cg3-llc/prior_node/issues).
 
 ## License
 
