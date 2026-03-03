@@ -35,8 +35,16 @@ function loadConfig() {
 
 function saveConfig(data) {
   const dir = path.dirname(CONFIG_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    if (process.platform !== "win32") {
+      try { fs.chmodSync(dir, 0o700); } catch {}
+    }
+  }
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2));
+  if (process.platform !== "win32") {
+    try { fs.chmodSync(CONFIG_PATH, 0o600); } catch {}
+  }
 }
 
 function getAuth() {
@@ -55,6 +63,23 @@ function getAuth() {
 
 function getApiKey() {
   return process.env.PRIOR_API_KEY || loadConfig()?.apiKey || null;
+}
+
+/**
+ * Read an API key from a file path or stdin (if path is "-").
+ * Returns the first line, trimmed. Used by --api-key-file flag.
+ */
+function readApiKeyFromFile(filePath) {
+  if (filePath === "-") {
+    // Read from stdin synchronously
+    const buf = fs.readFileSync(0, "utf-8");
+    return buf.split("\n")[0].trim();
+  }
+  const resolved = path.resolve(filePath);
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`API key file not found: ${resolved}`);
+  }
+  return fs.readFileSync(resolved, "utf-8").split("\n")[0].trim();
 }
 
 // --- HTTP ---
@@ -569,7 +594,13 @@ Show your current credit balance.`);
 
 // --- OAuth Login ---
 
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function loginPageHtml(status, message) {
+  message = escapeHtml(message);
   const isSuccess = status === "success";
   const iconColor = isSuccess ? "#34d399" : "#f87171";
   const iconPath = isSuccess
@@ -652,6 +683,17 @@ This replaces the need to manually copy-paste API keys.`);
         const returnedState = url.searchParams.get("state");
         const error = url.searchParams.get("error");
 
+        // Validate state parameter to prevent CSRF attacks
+        if (returnedState !== state) {
+          res.writeHead(400, { "Content-Type": "text/html" });
+          res.end(loginPageHtml("error", "OAuth state mismatch — possible CSRF attack. Please try again."));
+          process.stderr.write("Login failed: OAuth state mismatch (possible CSRF). Try again.\n");
+          server.closeAllConnections();
+          server.close();
+          resolve();
+          return;
+        }
+
         if (error) {
           res.writeHead(200, { "Content-Type": "text/html" });
           res.end(loginPageHtml("error", `Authentication was denied or failed. You can close this window.`));
@@ -727,16 +769,15 @@ This replaces the need to manually copy-paste API keys.`);
       process.stderr.write(`Opening browser for authentication...\n`);
       process.stderr.write(`If the browser doesn't open, visit: ${authorizeUrl}\n`);
 
-      // Open browser (cross-platform)
+      // Open browser (cross-platform) — use spawn to avoid shell injection
       const openBrowser = (url) => {
         const cp = require("child_process");
         if (process.platform === "win32") {
-          // Windows: start "" "url" — first arg is window title, must be empty
-          cp.exec(`start "" "${url}"`).unref();
+          cp.spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
         } else if (process.platform === "darwin") {
-          cp.exec(`open "${url}"`).unref();
+          cp.spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
         } else {
-          cp.exec(`xdg-open "${url}"`).unref();
+          cp.spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
         }
       };
       openBrowser(authorizeUrl);
