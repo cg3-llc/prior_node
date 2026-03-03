@@ -894,6 +894,7 @@ https://prior.cg3.io
 Usage: prior <command> [options]
 
 Commands:
+  setup                    One-command install for AI coding tools (--help)
   search <query>           Search the knowledge base
   contribute               Contribute a solution (--help for all fields)
   feedback <id> <outcome>  Give feedback on a search result
@@ -954,6 +955,20 @@ async function main() {
     login: cmdLogin,
     logout: cmdLogout,
     whoami: cmdWhoami,
+    setup: (args) => {
+      const { cmdSetup } = require("./setup.js");
+      return cmdSetup(args, {
+        VERSION,
+        API_URL,
+        loadConfig,
+        saveConfig,
+        api,
+        readApiKeyFromFile,
+        refreshTokenIfNeeded,
+        doOAuthLogin: () => cmdLogin({}),
+        escapeHtml,
+      });
+    },
   };
 
   if (commands[cmd]) {

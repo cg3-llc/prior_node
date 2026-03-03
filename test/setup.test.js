@@ -1,0 +1,386 @@
+// Tests for prior setup command
+// Node 18+ built-in test runner, zero dependencies
+"use strict";
+
+const { describe, it, beforeEach } = require("node:test");
+const assert = require("node:assert/strict");
+const path = require("path");
+const os = require("os");
+
+const {
+  buildMcpConfig,
+  buildHttpConfigWithAuth,
+  buildStdioConfig,
+  installMcpJson,
+  installRules,
+  uninstallRules,
+  parseRulesVersion,
+  createManualPlatform,
+  sanitizeError,
+  PRIOR_MARKER_RE,
+  PRIOR_BLOCK_RE,
+  getBundledRules,
+} = require("../bin/setup.js");
+
+// ─── Mock Helpers ─────────────────────────────────────────────
+
+function mockPlatform(overrides = {}) {
+  return {
+    platform: "claude-code",
+    version: "1.0.34",
+    configPath: path.join(os.tmpdir(), `prior-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`),
+    rulesPath: path.join(os.tmpdir(), `prior-test-rules-${Date.now()}-${Math.random().toString(36).slice(2)}.md`),
+    skillDir: null,
+    hasCli: false,
+    existingMcp: null,
+    rootKey: "mcpServers",
+    ...overrides,
+  };
+}
+
+const fs = require("fs");
+
+function cleanupFile(p) {
+  try { fs.unlinkSync(p); } catch {}
+  try { fs.unlinkSync(p + ".bak"); } catch {}
+}
+
+// ─── Config Generation ───────────────────────────────────────
+
+describe("MCP config generation", () => {
+  it("generates correct HTTP config with auth", () => {
+    const config = buildHttpConfigWithAuth("ask_test123");
+    assert.deepStrictEqual(config, {
+      type: "http",
+      url: "https://api.cg3.io/mcp",
+      headers: { Authorization: "Bearer ask_test123" },
+    });
+  });
+
+  it("generates correct stdio config (non-Windows)", () => {
+    const config = buildStdioConfig("ask_test123");
+    if (process.platform === "win32") {
+      assert.equal(config.command, "cmd");
+      assert.deepStrictEqual(config.args, ["/c", "npx", "-y", "@cg3/prior-mcp"]);
+    } else {
+      assert.equal(config.command, "npx");
+      assert.deepStrictEqual(config.args, ["-y", "@cg3/prior-mcp"]);
+    }
+    assert.deepStrictEqual(config.env, { PRIOR_API_KEY: "ask_test123" });
+  });
+
+  it("buildMcpConfig selects http by default", () => {
+    const config = buildMcpConfig("ask_test", "http");
+    assert.equal(config.type, "http");
+    assert.ok(config.headers);
+  });
+
+  it("buildMcpConfig selects stdio", () => {
+    const config = buildMcpConfig("ask_test", "stdio");
+    assert.ok(config.command);
+    assert.ok(config.env);
+  });
+});
+
+// ─── MCP JSON Installation ───────────────────────────────────
+
+describe("MCP JSON installation", () => {
+  it("creates new config file when none exists", () => {
+    const p = mockPlatform();
+    cleanupFile(p.configPath);
+    const result = installMcpJson(p, buildHttpConfigWithAuth("ask_test"), false);
+    assert.ok(result.success);
+    const written = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.ok(written.mcpServers.prior);
+    assert.equal(written.mcpServers.prior.url, "https://api.cg3.io/mcp");
+    cleanupFile(p.configPath);
+  });
+
+  it("merges into existing config without clobbering", () => {
+    const p = mockPlatform();
+    fs.writeFileSync(p.configPath, JSON.stringify({
+      mcpServers: { other: { url: "https://example.com" } },
+    }));
+    installMcpJson(p, buildHttpConfigWithAuth("ask_test"), false);
+    const written = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.ok(written.mcpServers.prior);
+    assert.ok(written.mcpServers.other, "other server should be preserved");
+    cleanupFile(p.configPath);
+  });
+
+  it("updates existing prior entry", () => {
+    const p = mockPlatform();
+    fs.writeFileSync(p.configPath, JSON.stringify({
+      mcpServers: { prior: { url: "https://old.example.com" } },
+    }));
+    installMcpJson(p, buildHttpConfigWithAuth("ask_new"), false);
+    const written = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.equal(written.mcpServers.prior.headers.Authorization, "Bearer ask_new");
+    cleanupFile(p.configPath);
+  });
+
+  it("creates backup before writing", () => {
+    const p = mockPlatform();
+    fs.writeFileSync(p.configPath, '{"existing": true}');
+    installMcpJson(p, buildHttpConfigWithAuth("ask_test"), false);
+    assert.ok(fs.existsSync(p.configPath + ".bak"), "backup should exist");
+    cleanupFile(p.configPath);
+  });
+
+  it("handles empty/invalid existing file", () => {
+    const p = mockPlatform();
+    fs.writeFileSync(p.configPath, "not json");
+    installMcpJson(p, buildHttpConfigWithAuth("ask_test"), false);
+    const written = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.ok(written.mcpServers.prior);
+    cleanupFile(p.configPath);
+  });
+
+  it("dry run does not write", () => {
+    const p = mockPlatform();
+    cleanupFile(p.configPath);
+    installMcpJson(p, buildHttpConfigWithAuth("ask_test"), true);
+    assert.ok(!fs.existsSync(p.configPath), "file should not exist after dry run");
+  });
+});
+
+// ─── Rules Installation ──────────────────────────────────────
+
+describe("Behavioral rules installation", () => {
+  const rules = getBundledRules();
+  const version = parseRulesVersion(rules);
+
+  it("bundled rules have version marker", () => {
+    assert.ok(version, "should parse version from bundled rules");
+    assert.match(version, /^\d+\.\d+\.\d+$/);
+  });
+
+  it("creates new rules file when none exists", () => {
+    const p = mockPlatform();
+    cleanupFile(p.rulesPath);
+    const result = installRules(p, rules, version, false);
+    assert.equal(result.action, "created");
+    const content = fs.readFileSync(p.rulesPath, "utf-8");
+    assert.ok(content.includes("prior:v"));
+    assert.ok(content.includes("ALWAYS search Prior"));
+    cleanupFile(p.rulesPath);
+  });
+
+  it("appends to existing rules file", () => {
+    const p = mockPlatform();
+    fs.writeFileSync(p.rulesPath, "# Existing Rules\n\nDo good work.\n");
+    const result = installRules(p, rules, version, false);
+    assert.equal(result.action, "created");
+    const content = fs.readFileSync(p.rulesPath, "utf-8");
+    assert.ok(content.includes("# Existing Rules"));
+    assert.ok(content.includes("ALWAYS search Prior"));
+    cleanupFile(p.rulesPath);
+  });
+
+  it("skips if same version already present", () => {
+    const p = mockPlatform();
+    fs.writeFileSync(p.rulesPath, rules);
+    const result = installRules(p, rules, version, false);
+    assert.equal(result.action, "skipped");
+    cleanupFile(p.rulesPath);
+  });
+
+  it("updates if older version present", () => {
+    const p = mockPlatform();
+    const oldRules = rules.replace(`prior:v${version}`, "prior:v0.1.0");
+    fs.writeFileSync(p.rulesPath, "# Header\n\n" + oldRules + "\n\n# Footer\n");
+    const result = installRules(p, rules, version, false);
+    assert.equal(result.action, "updated");
+    const content = fs.readFileSync(p.rulesPath, "utf-8");
+    assert.ok(content.includes(`prior:v${version}`));
+    assert.ok(!content.includes("prior:v0.1.0"));
+    assert.ok(content.includes("# Header"));
+    assert.ok(content.includes("# Footer"));
+    cleanupFile(p.rulesPath);
+  });
+
+  it("returns clipboard for Cursor", () => {
+    const p = mockPlatform({ platform: "cursor", rulesPath: null });
+    const result = installRules(p, rules, version, true);
+    assert.equal(result.action, "clipboard");
+  });
+
+  it("dry run does not write", () => {
+    const p = mockPlatform();
+    cleanupFile(p.rulesPath);
+    installRules(p, rules, version, true);
+    assert.ok(!fs.existsSync(p.rulesPath));
+  });
+});
+
+// ─── Rules Uninstall ─────────────────────────────────────────
+
+describe("Rules uninstall", () => {
+  const rules = getBundledRules();
+
+  it("removes Prior block from rules file", () => {
+    const p = mockPlatform();
+    fs.writeFileSync(p.rulesPath, "# Header\n\n" + rules + "\n\n# Footer\n");
+    const removed = uninstallRules(p, false);
+    assert.ok(removed);
+    const content = fs.readFileSync(p.rulesPath, "utf-8");
+    assert.ok(!content.includes("prior:v"));
+    assert.ok(content.includes("# Header"));
+    assert.ok(content.includes("# Footer"));
+    cleanupFile(p.rulesPath);
+  });
+
+  it("deletes file if only Prior content", () => {
+    const p = mockPlatform();
+    fs.writeFileSync(p.rulesPath, rules);
+    const removed = uninstallRules(p, false);
+    assert.ok(removed);
+    assert.ok(!fs.existsSync(p.rulesPath));
+  });
+
+  it("returns false if no Prior content", () => {
+    const p = mockPlatform();
+    fs.writeFileSync(p.rulesPath, "# No Prior here\n");
+    const removed = uninstallRules(p, false);
+    assert.ok(!removed);
+    cleanupFile(p.rulesPath);
+  });
+});
+
+// ─── Version Parsing ─────────────────────────────────────────
+
+describe("Version marker parsing", () => {
+  it("parses version from marker", () => {
+    assert.equal(parseRulesVersion("<!-- prior:v0.5.3 -->"), "0.5.3");
+    assert.equal(parseRulesVersion("<!-- prior:v1.0.0 -->"), "1.0.0");
+  });
+
+  it("returns null for no marker", () => {
+    assert.equal(parseRulesVersion("no marker here"), null);
+    assert.equal(parseRulesVersion(""), null);
+  });
+});
+
+// ─── Manual Platform ─────────────────────────────────────────
+
+describe("Manual platform creation", () => {
+  it("creates claude-code platform", () => {
+    const p = createManualPlatform("claude-code");
+    assert.equal(p.platform, "claude-code");
+    assert.ok(p.configPath.includes(".claude.json"));
+    assert.ok(p.rulesPath.includes("CLAUDE.md"));
+  });
+
+  it("creates cursor platform", () => {
+    const p = createManualPlatform("cursor");
+    assert.equal(p.platform, "cursor");
+    assert.equal(p.rulesPath, null);
+  });
+
+  it("creates windsurf platform", () => {
+    const p = createManualPlatform("windsurf");
+    assert.equal(p.platform, "windsurf");
+    assert.ok(p.rulesPath.includes("global_rules.md"));
+  });
+
+  it("throws for unknown platform", () => {
+    assert.throws(() => createManualPlatform("notepad"), /Unknown platform/);
+  });
+});
+
+// ─── Sanitize Error ──────────────────────────────────────────
+
+describe("Error sanitization", () => {
+  it("replaces home dir with ~", () => {
+    const home = os.homedir();
+    assert.equal(sanitizeError(`EACCES: ${home}/.cursor/mcp.json`), "EACCES: ~/.cursor/mcp.json");
+  });
+
+  it("leaves non-path errors alone", () => {
+    assert.equal(sanitizeError("Connection refused"), "Connection refused");
+  });
+});
+
+// ─── Regex Patterns ──────────────────────────────────────────
+
+describe("Regex patterns", () => {
+  it("PRIOR_MARKER_RE matches version markers", () => {
+    assert.ok(PRIOR_MARKER_RE.test("<!-- prior:v0.5.3 -->"));
+    assert.ok(PRIOR_MARKER_RE.test("<!-- prior:v1.0.0 -->"));
+    assert.ok(!PRIOR_MARKER_RE.test("prior v0.5.3"));
+  });
+
+  it("PRIOR_BLOCK_RE captures full block", () => {
+    const text = "before\n<!-- prior:v0.5.3 -->\ncontent\n<!-- /prior -->\nafter";
+    const match = text.match(PRIOR_BLOCK_RE);
+    assert.ok(match);
+    assert.ok(match[0].includes("content"));
+    assert.ok(!match[0].includes("before"));
+    assert.ok(!match[0].includes("after"));
+  });
+});
+
+// ─── Platform Detection ──────────────────────────────────────
+
+describe("Platform detection", () => {
+  // These are environment-dependent — test what we can
+  const { detectPlatforms } = require("../bin/setup.js");
+
+  it("returns an array", () => {
+    const platforms = detectPlatforms();
+    assert.ok(Array.isArray(platforms));
+  });
+
+  it("each platform has required fields", () => {
+    const platforms = detectPlatforms();
+    for (const p of platforms) {
+      assert.ok(p.platform, "must have platform id");
+      assert.ok(p.configPath, "must have configPath");
+      assert.ok(p.rootKey, "must have rootKey");
+    }
+  });
+});
+
+// ─── MCP Uninstall ───────────────────────────────────────────
+
+describe("MCP uninstall", () => {
+  const { uninstallMcp } = require("../bin/setup.js");
+
+  it("removes prior entry from config", () => {
+    const p = mockPlatform();
+    fs.writeFileSync(p.configPath, JSON.stringify({
+      mcpServers: {
+        prior: { url: "https://api.cg3.io/mcp" },
+        other: { url: "https://example.com" },
+      },
+    }));
+    const removed = uninstallMcp(p, false);
+    assert.ok(removed);
+    const data = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.ok(!data.mcpServers.prior, "prior should be removed");
+    assert.ok(data.mcpServers.other, "other should remain");
+    cleanupFile(p.configPath);
+  });
+
+  it("deletes file if empty after removal", () => {
+    const p = mockPlatform();
+    fs.writeFileSync(p.configPath, JSON.stringify({ mcpServers: { prior: {} } }));
+    uninstallMcp(p, false);
+    assert.ok(!fs.existsSync(p.configPath));
+  });
+
+  it("returns false if no prior entry", () => {
+    const p = mockPlatform();
+    fs.writeFileSync(p.configPath, JSON.stringify({ mcpServers: { other: {} } }));
+    const removed = uninstallMcp(p, false);
+    assert.ok(!removed);
+    cleanupFile(p.configPath);
+  });
+
+  it("returns false if file doesn't exist", () => {
+    const p = mockPlatform();
+    cleanupFile(p.configPath);
+    const removed = uninstallMcp(p, false);
+    assert.ok(!removed);
+  });
+});
