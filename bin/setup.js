@@ -1,5 +1,5 @@
 // prior setup — One-command installation for AI coding tools.
-// Zero dependencies. Part of @cg3/prior-node.
+// Uses @cg3/equip for platform detection, MCP config, and rules management.
 // https://prior.cg3.io
 
 "use strict";
@@ -10,254 +10,36 @@ const os = require("os");
 const { execSync, spawn } = require("child_process");
 const readline = require("readline");
 
+// ─── Equip Integration ───────────────────────────────────────
+
+const {
+  Equip,
+  detectPlatforms,
+  readMcpEntry,
+  buildHttpConfigWithAuth,
+  buildStdioConfig,
+  buildHttpConfig,
+  installMcpJson,
+  uninstallMcp,
+  updateMcpKey,
+  installRules,
+  uninstallRules,
+  parseRulesVersion,
+  markerPatterns,
+  createManualPlatform,
+  platformName,
+  cli,
+} = require("@cg3/equip");
+
+const { log, ok, fail, warn, info, step, prompt, promptEnterOrEsc, copyToClipboard, sanitizeError,
+  GREEN, RED, YELLOW, CYAN, BOLD, DIM, RESET } = cli;
+
 // ─── Constants ───────────────────────────────────────────────
 
 const MCP_URL = "https://api.cg3.io/mcp";
+const PRIOR_MARKER = "prior";
 
-// ─── Platform Detection ──────────────────────────────────────
-
-function whichSync(cmd) {
-  try {
-    const r = execSync(process.platform === "win32" ? `where ${cmd} 2>nul` : `which ${cmd} 2>/dev/null`, { encoding: "utf-8", timeout: 5000 });
-    return r.trim().split(/\r?\n/)[0] || null;
-  } catch { return null; }
-}
-
-function dirExists(p) {
-  try { return fs.statSync(p).isDirectory(); } catch { return false; }
-}
-function fileExists(p) {
-  try { return fs.statSync(p).isFile(); } catch { return false; }
-}
-
-function getClaudeCodeVersion() {
-  try {
-    const out = execSync("claude --version 2>&1", { encoding: "utf-8", timeout: 5000 });
-    const m = out.match(/(\d+\.\d+[\.\d]*)/);
-    return m ? m[1] : "unknown";
-  } catch { return null; }
-}
-
-function getCursorVersion() {
-  try {
-    const out = execSync("cursor --version 2>&1", { encoding: "utf-8", timeout: 5000 });
-    const m = out.match(/(\d+\.\d+[\.\d]*)/);
-    return m ? m[1] : "unknown";
-  } catch { return null; }
-}
-
-/**
- * Detect installed AI coding platforms.
- * Returns array of { platform, version, configPath, rulesPath, existingMcp }
- */
-function detectPlatforms() {
-  const home = os.homedir();
-  const platforms = [];
-
-  // Claude Code
-  const claudeVersion = whichSync("claude") ? getClaudeCodeVersion() : null;
-  if (claudeVersion || dirExists(path.join(home, ".claude"))) {
-    const configPath = path.join(home, ".claude.json");
-    const rulesPath = path.join(home, ".claude", "CLAUDE.md");
-    const existingMcp = readMcpEntry(configPath, "mcpServers");
-    platforms.push({
-      platform: "claude-code",
-      version: claudeVersion || "unknown",
-      configPath,
-      rulesPath,
-      skillDir: path.join(home, ".claude", "skills", "prior", "search"),
-      existingMcp,
-      hasCli: !!whichSync("claude"),
-      rootKey: "mcpServers",
-    });
-  }
-
-  // Cursor
-  const cursorDir = path.join(home, ".cursor");
-  if (whichSync("cursor") || dirExists(cursorDir)) {
-    const configPath = path.join(cursorDir, "mcp.json");
-    const existingMcp = readMcpEntry(configPath, "mcpServers");
-    platforms.push({
-      platform: "cursor",
-      version: getCursorVersion() || "unknown",
-      configPath,
-      rulesPath: null, // Cursor: clipboard only
-      existingMcp,
-      hasCli: !!whichSync("cursor"),
-      rootKey: "mcpServers",
-    });
-  }
-
-  // Windsurf
-  const windsurfDir = path.join(home, ".codeium", "windsurf");
-  if (dirExists(windsurfDir)) {
-    const configPath = path.join(windsurfDir, "mcp_config.json");
-    const rulesPath = path.join(windsurfDir, "memories", "global_rules.md");
-    const existingMcp = readMcpEntry(configPath, "mcpServers");
-    platforms.push({
-      platform: "windsurf",
-      version: "unknown",
-      configPath,
-      rulesPath,
-      existingMcp,
-      hasCli: false,
-      rootKey: "mcpServers",
-    });
-  }
-
-  return platforms;
-}
-
-function readMcpEntry(configPath, rootKey) {
-  try {
-    const data = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    return data?.[rootKey]?.prior || null;
-  } catch { return null; }
-}
-
-// ─── MCP Config Installation ─────────────────────────────────
-
-function buildHttpConfig() {
-  return {
-    type: "http",
-    url: MCP_URL,
-  };
-}
-
-function buildHttpConfigWithAuth(apiKey) {
-  return {
-    ...buildHttpConfig(),
-    headers: { Authorization: `Bearer ${apiKey}` },
-  };
-}
-
-function buildStdioConfig(apiKey) {
-  if (process.platform === "win32") {
-    return {
-      command: "cmd",
-      args: ["/c", "npx", "-y", "@cg3/prior-mcp"],
-      env: { PRIOR_API_KEY: apiKey },
-    };
-  }
-  return {
-    command: "npx",
-    args: ["-y", "@cg3/prior-mcp"],
-    env: { PRIOR_API_KEY: apiKey },
-  };
-}
-
-function buildMcpConfig(apiKey, transport) {
-  if (transport === "stdio") return buildStdioConfig(apiKey);
-  return buildHttpConfigWithAuth(apiKey);
-}
-
-/**
- * Install MCP config for a platform via CLI or JSON write.
- * Returns { success, method } or throws.
- */
-function installMcp(platform, apiKey, transport, dryRun) {
-  const config = buildMcpConfig(apiKey, transport);
-
-  // Claude Code: try CLI first
-  if (platform.platform === "claude-code" && platform.hasCli && transport === "http") {
-    try {
-      if (!dryRun) {
-        const headerArg = `Authorization: Bearer ${apiKey}`;
-        execSync(`claude mcp add --transport http -s user --header "${headerArg}" prior ${MCP_URL}`, {
-          encoding: "utf-8",
-          timeout: 15000,
-          stdio: "pipe",
-        });
-      }
-      return { success: true, method: "cli" };
-    } catch {
-      // Fall through to JSON
-    }
-  }
-
-  // Cursor: try CLI first
-  if (platform.platform === "cursor" && platform.hasCli) {
-    try {
-      const mcpJson = JSON.stringify({ name: "prior", ...config });
-      if (!dryRun) {
-        execSync(`cursor --add-mcp '${mcpJson.replace(/'/g, "'\\''")}'`, {
-          encoding: "utf-8",
-          timeout: 15000,
-          stdio: "pipe",
-        });
-      }
-      return { success: true, method: "cli" };
-    } catch {
-      // Fall through to JSON
-    }
-  }
-
-  // JSON write (all platforms, fallback for CLI failures)
-  return installMcpJson(platform, config, dryRun);
-}
-
-function installMcpJson(platform, mcpEntry, dryRun) {
-  const { configPath, rootKey } = platform;
-
-  let existing = {};
-  try {
-    existing = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    if (typeof existing !== "object" || existing === null) existing = {};
-  } catch {
-    // File doesn't exist or invalid JSON — start fresh
-  }
-
-  if (!existing[rootKey]) existing[rootKey] = {};
-  existing[rootKey].prior = mcpEntry;
-
-  if (!dryRun) {
-    const dir = path.dirname(configPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-    // Backup existing file
-    if (fileExists(configPath)) {
-      try { fs.copyFileSync(configPath, configPath + ".bak"); } catch {}
-    }
-
-    fs.writeFileSync(configPath, JSON.stringify(existing, null, 2) + "\n");
-  }
-
-  return { success: true, method: "json" };
-}
-
-/**
- * Remove MCP "prior" entry from a platform config.
- */
-function uninstallMcp(platform, dryRun) {
-  const { configPath, rootKey } = platform;
-  if (!fileExists(configPath)) return false;
-
-  try {
-    const data = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    if (!data?.[rootKey]?.prior) return false;
-    delete data[rootKey].prior;
-    if (Object.keys(data[rootKey]).length === 0) delete data[rootKey];
-    if (!dryRun) {
-      fs.copyFileSync(configPath, configPath + ".bak");
-      if (Object.keys(data).length === 0) {
-        fs.unlinkSync(configPath);
-      } else {
-        fs.writeFileSync(configPath, JSON.stringify(data, null, 2) + "\n");
-      }
-    }
-    return true;
-  } catch { return false; }
-}
-
-/**
- * Update API key in existing MCP config for a platform.
- */
-function updateMcpKey(platform, apiKey, transport) {
-  const config = buildMcpConfig(apiKey, transport);
-  return installMcpJson(platform, config, false);
-}
-
-// ─── Behavioral Rules Installation ───────────────────────────
+// ─── Prior-Specific Helpers ──────────────────────────────────
 
 function getBundledRules() {
   const rulesPath = path.join(__dirname, "..", "skills", "condensed.md");
@@ -269,165 +51,100 @@ function getBundledSkill() {
   return fs.readFileSync(skillPath, "utf-8");
 }
 
-const PRIOR_MARKER_RE = /<!-- prior:v[\d.]+ -->/;
-const PRIOR_BLOCK_RE = /<!-- prior:v[\d.]+ -->[\s\S]*?<!-- \/prior -->\n?/;
-
-function parseRulesVersion(content) {
-  const m = content.match(/<!-- prior:v([\d.]+) -->/);
-  return m ? m[1] : null;
+function getRulesVersion() {
+  const content = getBundledRules();
+  return parseRulesVersion(content, PRIOR_MARKER);
 }
 
-/**
- * Install behavioral rules to a platform's rules file.
- * Returns { action: 'created' | 'updated' | 'skipped' | 'clipboard' }
- */
-function installRules(platform, bundledRules, currentVersion, dryRun) {
-  // Cursor: clipboard only
-  if (platform.platform === "cursor") {
-    if (!dryRun) {
-      copyToClipboard(bundledRules);
-    }
-    return { action: "clipboard" };
-  }
+// ─── Equip Instance ──────────────────────────────────────────
 
-  if (!platform.rulesPath) return { action: "skipped" };
-
-  let existing = "";
-  try { existing = fs.readFileSync(platform.rulesPath, "utf-8"); } catch {}
-
-  const existingVersion = parseRulesVersion(existing);
-
-  if (existingVersion === currentVersion) {
-    return { action: "skipped" };
-  }
-
-  if (!dryRun) {
-    const dir = path.dirname(platform.rulesPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-    if (existingVersion) {
-      // Replace existing block
-      const updated = existing.replace(PRIOR_BLOCK_RE, bundledRules + "\n");
-      fs.writeFileSync(platform.rulesPath, updated);
-      return { action: "updated" };
-    }
-
-    // Append
-    const sep = existing && !existing.endsWith("\n\n") ? (existing.endsWith("\n") ? "\n" : "\n\n") : "";
-    fs.writeFileSync(platform.rulesPath, existing + sep + bundledRules + "\n");
-    return { action: "created" };
-  }
-
-  return { action: existingVersion ? "updated" : "created" };
+function createEquip(version) {
+  return new Equip({
+    name: "prior",
+    serverUrl: MCP_URL,
+    rules: {
+      content: getBundledRules(),
+      version: version || getRulesVersion(),
+      marker: PRIOR_MARKER,
+      fileName: "prior.md", // Standalone file for Cline/Roo Code
+      clipboardPlatforms: ["cursor", "vscode"],
+    },
+    stdio: {
+      command: "npx",
+      args: ["-y", "@cg3/prior-mcp"],
+      envKey: "PRIOR_API_KEY",
+    },
+  });
 }
 
-/**
- * Remove Prior rules from a platform's rules file.
- */
-function uninstallRules(platform, dryRun) {
-  if (!platform.rulesPath || !fileExists(platform.rulesPath)) return false;
-  try {
-    const content = fs.readFileSync(platform.rulesPath, "utf-8");
-    if (!PRIOR_MARKER_RE.test(content)) return false;
-    if (!dryRun) {
-      const cleaned = content.replace(PRIOR_BLOCK_RE, "").replace(/\n{3,}/g, "\n\n").trim();
-      if (cleaned) {
-        fs.writeFileSync(platform.rulesPath, cleaned + "\n");
-      } else {
-        fs.unlinkSync(platform.rulesPath);
-      }
-    }
-    return true;
-  } catch { return false; }
+// ─── Prior-Specific: Skill Installation ──────────────────────
+
+function getSkillDir(platform) {
+  if (platform.platform !== "claude-code") return null;
+  return path.join(os.homedir(), ".claude", "skills", "prior", "search");
 }
 
-/**
- * Install Claude Code skill files (bonus).
- */
+function fileExists(p) {
+  try { return fs.statSync(p).isFile(); } catch { return false; }
+}
+
 function installSkill(platform, dryRun) {
-  if (platform.platform !== "claude-code" || !platform.skillDir) return false;
+  const skillDir = getSkillDir(platform);
+  if (!skillDir) return false;
   if (!dryRun) {
-    fs.mkdirSync(platform.skillDir, { recursive: true });
-    fs.writeFileSync(path.join(platform.skillDir, "SKILL.md"), getBundledSkill());
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), getBundledSkill());
   }
   return true;
 }
 
 function uninstallSkill(platform, dryRun) {
-  if (platform.platform !== "claude-code" || !platform.skillDir) return false;
-  const skillFile = path.join(platform.skillDir, "SKILL.md");
+  const skillDir = getSkillDir(platform);
+  if (!skillDir) return false;
+  const skillFile = path.join(skillDir, "SKILL.md");
   if (!fileExists(skillFile)) return false;
   if (!dryRun) {
     try { fs.unlinkSync(skillFile); } catch {}
-    // Remove empty directories up to .claude/skills/
-    try { fs.rmdirSync(platform.skillDir); } catch {}
-    try { fs.rmdirSync(path.dirname(platform.skillDir)); } catch {}
+    try { fs.rmdirSync(skillDir); } catch {}
+    try { fs.rmdirSync(path.dirname(skillDir)); } catch {}
   }
   return true;
 }
 
-// ─── Clipboard ───────────────────────────────────────────────
-
-function copyToClipboard(text) {
-  try {
-    const cp = require("child_process");
-    if (process.platform === "darwin") {
-      cp.execSync("pbcopy", { input: text, timeout: 3000 });
-    } else if (process.platform === "win32") {
-      cp.execSync("clip", { input: text, timeout: 3000 });
-    } else {
-      // Try xclip, xsel, wl-copy
-      try { cp.execSync("xclip -selection clipboard", { input: text, timeout: 3000 }); }
-      catch { try { cp.execSync("xsel --clipboard --input", { input: text, timeout: 3000 }); }
-      catch { cp.execSync("wl-copy", { input: text, timeout: 3000 }); } }
-    }
-    return true;
-  } catch { return false; }
-}
-
 // ─── Verification ────────────────────────────────────────────
 
-async function verifySetup(platform, apiKey, apiUrl, currentVersion) {
-  const results = { mcp: false, api: false, search: false, rules: false, skill: false };
+async function verifySetup(platform, equip, apiKey, apiUrl) {
+  const results = { mcp: false, api: false, rules: false, skill: false };
 
   // 1. MCP config exists
-  results.mcp = !!readMcpEntry(platform.configPath, platform.rootKey);
+  results.mcp = !!equip.readMcp(platform);
 
   // 2. API reachable
   try {
-    const res = await fetch(`${apiUrl}/v1/agents/status`, {
+    const res = await fetch(`${apiUrl}/v1/agents/me`, {
       headers: { Authorization: `Bearer ${apiKey}`, "User-Agent": "prior-setup" },
     });
     results.api = res.ok;
   } catch {}
 
-  // 3. Test search (fire and forget, just check for 200)
-  try {
-    const res = await fetch(`${apiUrl}/v1/knowledge/search`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "User-Agent": "prior-setup",
-      },
-      body: JSON.stringify({ query: "prior setup test", maxResults: 1 }),
-    });
-    results.search = res.ok;
-  } catch {}
-
-  // 4. Rules exist
+  // 3. Rules exist
   if (platform.rulesPath) {
     try {
-      const content = fs.readFileSync(platform.rulesPath, "utf-8");
-      results.rules = PRIOR_MARKER_RE.test(content);
+      const rulesPath = platform.platform === "cline" || platform.platform === "roo-code"
+        ? path.join(platform.rulesPath, "prior.md")
+        : platform.rulesPath;
+      const content = fs.readFileSync(rulesPath, "utf-8");
+      const { MARKER_RE } = markerPatterns(PRIOR_MARKER);
+      results.rules = MARKER_RE.test(content);
     } catch {}
-  } else if (platform.platform === "cursor") {
+  } else if (platform.platform === "cursor" || platform.platform === "vscode") {
     results.rules = true; // Can't verify clipboard paste
   }
 
-  // 5. Skill exists (Claude Code only)
-  if (platform.platform === "claude-code" && platform.skillDir) {
-    results.skill = fileExists(path.join(platform.skillDir, "SKILL.md"));
+  // 4. Skill exists (Claude Code only)
+  const skillDir = getSkillDir(platform);
+  if (skillDir) {
+    results.skill = fileExists(path.join(skillDir, "SKILL.md"));
   }
 
   return results;
@@ -457,54 +174,14 @@ async function sendSetupReport(apiKey, apiUrl, cliVersion, platformResults) {
         })),
       }),
     });
-  } catch {
-    // Fire and forget
-  }
-}
-
-function sanitizeError(msg) {
-  return msg.replace(os.homedir(), "~");
-}
-
-// ─── Interactive Prompts ─────────────────────────────────────
-
-function prompt(question) {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-    rl.question(question, (answer) => { rl.close(); resolve(answer.trim()); });
-  });
-}
-
-// ─── Output Helpers ──────────────────────────────────────────
-
-const GREEN = "\x1b[32m";
-const RED = "\x1b[31m";
-const YELLOW = "\x1b[33m";
-const CYAN = "\x1b[36m";
-const BOLD = "\x1b[1m";
-const DIM = "\x1b[2m";
-const RESET = "\x1b[0m";
-
-function log(msg = "") { process.stderr.write(msg + "\n"); }
-function ok(msg) { log(`  ${GREEN}✓${RESET} ${msg}`); }
-function fail(msg) { log(`  ${RED}✗${RESET} ${msg}`); }
-function warn(msg) { log(`  ${YELLOW}⚠${RESET} ${msg}`); }
-function info(msg) { log(`  ${CYAN}ⓘ${RESET} ${msg}`); }
-function step(n, total, title) { log(`\n${BOLD}Step ${n}/${total}: ${title}${RESET}`); }
-
-function platformName(id) {
-  const names = { "claude-code": "Claude Code", cursor: "Cursor", windsurf: "Windsurf" };
-  return names[id] || id;
+  } catch { /* Fire and forget */ }
 }
 
 // ─── Main Setup Command ──────────────────────────────────────
 
-/**
- * @param {object} args - Parsed CLI args
- * @param {object} deps - Injected dependencies { VERSION, API_URL, loadConfig, saveConfig, api, cmdLogin, escapeHtml }
- */
 async function cmdSetup(args, deps) {
   const { VERSION, API_URL, loadConfig, saveConfig, api } = deps;
+  const equip = createEquip(VERSION);
 
   if (args.help) {
     log(`prior setup [options]
@@ -514,7 +191,7 @@ Detects your environment, authenticates, configures MCP, and installs
 behavioral rules so your agents start using Prior automatically.
 
 Options:
-  --platform <name>      Target: claude-code, cursor, windsurf
+  --platform <name>      Target: claude-code, cursor, windsurf, vscode, cline, roo-code
   --transport http|stdio Transport (default: http)
   --api-key <key>        Use this API key (skips OAuth)
   --api-key-file <path>  Read API key from file (- for stdin)
@@ -546,45 +223,44 @@ Examples:
 
   // ── Uninstall Mode ──
   if (args.uninstall) {
-    return runUninstall(args, dryRun, VERSION);
+    return runUninstall(args, equip, dryRun, VERSION);
   }
 
   // ── Detection ──
-  log(`\n${BOLD}Prior Setup${RESET}`);
-  log("===========\n");
+  log(`\n${BOLD}Prior Setup${RESET}\n`);
   log("Detecting environment...");
 
-  let platforms = detectPlatforms();
-  log(`  OS:        ${process.platform} ${os.arch()}`);
-  log(`  Node:      ${process.version}`);
+  let platforms = equip.detect();
+  log(`  OS         ${process.platform} ${os.arch()}`);
+  log(`  Node       ${process.version}`);
+  log(`  Prior CLI  v${VERSION}`);
 
   // Filter by --platform if specified
   if (args.platform) {
     platforms = platforms.filter(p => p.platform === args.platform);
     if (platforms.length === 0) {
-      // Even if not detected, allow manual override
       platforms = [createManualPlatform(args.platform)];
     }
   }
 
   if (platforms.length === 0) {
     fail("No supported AI coding tools detected.");
-    log(`\n  Install one of: Claude Code, Cursor, Windsurf`);
+    log(`\n  Install one of: Claude Code, Cursor, Windsurf, VS Code, Cline, Roo Code`);
     log(`  Or specify manually: prior setup --platform claude-code`);
     process.exit(1);
   }
 
   const names = platforms.map(p => `${platformName(p.platform)} ${p.version !== "unknown" ? `v${p.version}` : ""}`).join(", ");
-  log(`  Platform${platforms.length > 1 ? "s" : ""}: ${names.trim()}`);
+  log(`  Detected   ${names.trim()}`);
 
   // ── Rekey Mode ──
   if (args.rekey) {
-    return runRekey(args, deps, platforms, transport, nonInteractive, dryRun);
+    return runRekey(args, deps, equip, platforms, transport, nonInteractive, dryRun);
   }
 
-  // ── Check existing setup (for --update or idempotent re-run) ──
+  // ── Update Mode ──
   if (args.update) {
-    return runUpdate(args, deps, platforms, transport, nonInteractive, dryRun);
+    return runUpdate(args, deps, equip, platforms, transport, nonInteractive, dryRun);
   }
 
   // ── Step 1: Authentication ──
@@ -593,40 +269,45 @@ Examples:
 
   let apiKey = await resolveAuth(args, deps, nonInteractive, dryRun);
   if (!apiKey) {
-    fail("Authentication failed. Cannot continue.");
-    log(`\n  → Try: prior setup --api-key <key>`);
-    log(`  → Get a key: https://prior.cg3.io/account`);
+    fail("Authentication failed");
+    log(`    → Run: prior setup --api-key <key>`);
+    log(`    → Get a key at: https://prior.cg3.io/account`);
     process.exit(1);
   }
 
   // Validate the key
-  const whoami = await api("GET", "/v1/agents/me", null, apiKey);
-  if (whoami.ok && whoami.data) {
-    ok(`Authenticated as ${whoami.data.agentId} (${whoami.data.credits} credits)`);
+  if (dryRun) {
+    ok(`API key: ${apiKey.slice(0, 8)}...${apiKey.slice(-4)} (skipping validation in dry-run)`);
   } else {
-    fail("API key validation failed");
-    log(`  → Key might be invalid. Try: prior setup --api-key <new-key>`);
-    process.exit(1);
+    const whoami = await api("GET", "/v1/agents/me", null, apiKey);
+    if (whoami.ok && whoami.data) {
+      ok(`Authenticated as ${whoami.data.agentId} (${whoami.data.credits} credits)`);
+    } else {
+      fail("API key validation failed");
+      log(`    → Key may be invalid or expired`);
+      log(`    → Try: prior setup --api-key <new-key>`);
+      process.exit(1);
+    }
   }
 
   // ── Step 2: MCP Server ──
   step(2, totalSteps, "MCP Server");
-  log(`  Transport: ${transport === "http" ? "HTTP (remote — no local install needed)" : "stdio (local)"}`);
+  log(`  Transport  ${transport} ${DIM}${transport === "http" ? "(remote — no local install needed)" : "(local process)"}${RESET}`);
 
   const platformResults = [];
   for (const p of platforms) {
     if (args.skipMcp) {
-      info(`${platformName(p.platform)}: Skipped (--skip-mcp)`);
+      info(`${platformName(p.platform)}   Skipped ${DIM}(--skip-mcp)${RESET}`);
       platformResults.push({ ...p, transport, mcpSuccess: true, mcpMethod: "skipped" });
       continue;
     }
 
     try {
-      const result = installMcp(p, apiKey, transport, dryRun);
-      ok(`${platformName(p.platform)}: MCP server "prior" ${dryRun ? "would be " : ""}added (${transport}, ${result.method})`);
+      const result = equip.installMcp(p, apiKey, { transport, dryRun });
+      ok(`${platformName(p.platform)}   MCP server "prior" ${dryRun ? "would be " : ""}added ${DIM}(${transport}, ${result.method})${RESET}`);
       platformResults.push({ ...p, transport, mcpSuccess: true, mcpMethod: result.method });
     } catch (e) {
-      fail(`${platformName(p.platform)}: ${e.message}`);
+      fail(`${platformName(p.platform)}   ${e.message}`);
       platformResults.push({ ...p, transport, mcpSuccess: false, error: e.message });
     }
   }
@@ -634,42 +315,45 @@ Examples:
   // ── Step 3: Behavioral Rules ──
   step(3, totalSteps, "Behavioral Rules");
 
-  const bundledRules = getBundledRules();
-
   for (const p of platformResults) {
     if (args.skipRules) {
-      info(`${platformName(p.platform)}: Skipped (--skip-rules)`);
+      info(`${platformName(p.platform)}   Skipped ${DIM}(--skip-rules)${RESET}`);
       continue;
     }
 
     if (!p.mcpSuccess && p.platform !== "cursor") {
-      log(`  ${DIM}— ${platformName(p.platform)}: Skipped (MCP install failed)${RESET}`);
+      log(`  ${DIM}— ${platformName(p.platform)}   Skipped (MCP install failed)${RESET}`);
       continue;
     }
 
     try {
-      const rResult = installRules(p, bundledRules, VERSION, dryRun);
+      const rResult = equip.installRules(p, { dryRun });
       if (rResult.action === "clipboard") {
         const copied = !dryRun;
         if (copied) {
-          info(`${platformName(p.platform)}: Rules copied to clipboard`);
-          log(`    → Paste in: Cursor > Settings (Cmd+,) > Rules`);
+          warn(`${platformName(p.platform)}   Rules copied to clipboard — paste required`);
+          if (p.platform === "vscode") {
+            log(`    → Create .github/copilot-instructions.md in your project and paste`);
+          } else {
+            log(`    → Open Cursor > Settings (${process.platform === "darwin" ? "⌘" : "Ctrl"}+,) > Rules > Paste`);
+          }
         } else {
-          info(`${platformName(p.platform)}: Rules would be copied to clipboard`);
+          info(`${platformName(p.platform)}   Rules would be copied to clipboard`);
         }
       } else if (rResult.action === "skipped") {
-        ok(`${platformName(p.platform)}: Rules already up to date`);
+        ok(`${platformName(p.platform)}   Rules already up to date`);
       } else {
-        ok(`${platformName(p.platform)}: Prior rules ${rResult.action} in ${p.rulesPath?.replace(os.homedir(), "~") || "rules file"}`);
+        const rulesFile = p.rulesPath ? p.rulesPath.replace(os.homedir(), "~") : "rules file";
+        ok(`${platformName(p.platform)}   Prior rules ${rResult.action} in ${rulesFile}`);
       }
 
       // Claude Code bonus: install skill
       if (p.platform === "claude-code") {
         installSkill(p, dryRun);
-        ok(`${platformName(p.platform)}: Skill installed to ~/.claude/skills/prior/`);
+        ok(`${platformName(p.platform)}   Skill installed to ~/.claude/skills/prior/`);
       }
     } catch (e) {
-      fail(`${platformName(p.platform)}: ${e.message}`);
+      fail(`${platformName(p.platform)}   ${e.message}`);
     }
   }
 
@@ -679,28 +363,32 @@ Examples:
   let allGood = true;
   for (const p of platformResults) {
     if (!p.mcpSuccess) {
-      fail(`${platformName(p.platform)}: MCP failed`);
+      fail(`${platformName(p.platform)}   MCP failed`);
       allGood = false;
       continue;
     }
 
     if (dryRun) {
-      ok(`${platformName(p.platform)}: (dry run — skipping verification)`);
+      ok(`${platformName(p.platform)}   ${DIM}(dry run — skipping verification)${RESET}`);
       continue;
     }
 
-    const v = await verifySetup(p, apiKey, API_URL, VERSION);
+    const v = await verifySetup(p, equip, apiKey, API_URL);
     const checks = [];
     if (v.mcp) checks.push("MCP ✓"); else { checks.push("MCP ✗"); allGood = false; }
-    if (v.api) checks.push("API ✓"); else { checks.push("API ✗"); allGood = false; }
-    if (v.search) checks.push("Search ✓"); else checks.push("Search ✗");
     if (v.rules) checks.push("Rules ✓");
     if (p.platform === "claude-code" && v.skill) checks.push("Skill ✓");
+    if (v.api) checks.push("API ✓"); else checks.push("API ✗");
 
-    if (v.mcp && v.api) {
-      ok(`${platformName(p.platform)}: ${checks.join("  ")}`);
+    if (v.mcp) {
+      if (v.api) {
+        ok(`${platformName(p.platform)}   ${checks.join("  ")}`);
+      } else {
+        warn(`${platformName(p.platform)}   ${checks.join("  ")}  ${DIM}(API unreachable — will work once connected)${RESET}`);
+      }
     } else {
-      fail(`${platformName(p.platform)}: ${checks.join("  ")}`);
+      fail(`${platformName(p.platform)}   ${checks.join("  ")}`);
+      log(`    → MCP config not found. Try: prior setup --platform ${p.platform}`);
     }
   }
 
@@ -722,35 +410,63 @@ Examples:
 
   if (failed.length === 0) {
     const platList = succeeded.map(p => platformName(p.platform)).join(", ");
-    log(`${BOLD}Prior ${dryRun ? "would be " : ""}installed for ${platList} (${transport}).${RESET}`);
-    log(`\nYour agents will now search the knowledge base before solving`);
-    log(`problems and may occasionally ask to contribute solutions`);
-    log(`you've discovered.`);
+    log(`${GREEN}${BOLD}  ✓ Prior ${dryRun ? "would be " : ""}installed for ${platList}${RESET}`);
+    log(`\n  Your agents will now search Prior before solving problems`);
+    log(`  and may occasionally ask to contribute solutions you've discovered.`);
   } else if (succeeded.length > 0) {
-    log(`${BOLD}Prior partially installed.${RESET}`);
+    log(`${YELLOW}${BOLD}  ⚠ Prior partially installed${RESET}`);
     for (const s of succeeded) ok(`${platformName(s.platform)} is ready`);
     for (const f of failed) {
-      fail(`${platformName(f.platform)} setup failed:`);
+      fail(`${platformName(f.platform)} failed`);
       log(`    → ${f.error}`);
       log(`    → Fix: prior setup --platform ${f.platform}`);
     }
   } else {
-    log(`${RED}${BOLD}Prior setup failed.${RESET}`);
+    log(`${RED}${BOLD}  ✗ Prior setup failed${RESET}`);
     for (const f of failed) {
       fail(`${f.error}`);
     }
   }
 
-  log(`\n  Dashboard:  https://prior.cg3.io`);
-  log(`  Help:       prior@cg3.io`);
+  log(`\n  Dashboard   https://prior.cg3.io`);
   if (succeeded.length > 0) {
-    log(`  Commands:   prior setup --update | --rekey | --uninstall`);
+    log(`  Commands    prior setup --update | --rekey | --uninstall`);
+  }
+  log(`  Help        prior@cg3.io`);
+
+  // Platform-specific hints
+  if (succeeded.some(p => p.platform === "cursor")) {
+    log(`\n  ${DIM}Cursor: If Prior tools aren't available after restart,`);
+    log(`  check Settings > MCP and ensure "prior" is enabled.${RESET}`);
+  }
+  if (succeeded.some(p => p.platform === "vscode")) {
+    log(`\n  ${DIM}VS Code: Reload the window (Ctrl+Shift+P → "Reload Window")`);
+    log(`  to pick up the new MCP configuration.${RESET}`);
   }
 
-  // Cursor warning
-  if (succeeded.some(p => p.platform === "cursor")) {
-    log(`\n  ${YELLOW}⚠ Cursor note:${RESET} If Prior tools aren't available after restarting Cursor,`);
-    log(`    go to Settings > MCP and ensure the "prior" server is enabled.`);
+  // Offer to open dashboard
+  if (!nonInteractive && !dryRun && succeeded.length > 0) {
+    log("");
+    const openDashboard = await promptEnterOrEsc(`  Press ${BOLD}Enter${RESET} to open your Prior Dashboard, or ${BOLD}Esc${RESET} to exit: `);
+    if (!openDashboard) {
+      // User pressed Esc
+    } else {
+      let dashUrl = "https://prior.cg3.io/account";
+      try {
+        const codeData = await api("POST", "/v1/agents/cli-code", {}, apiKey);
+        if (codeData.ok && codeData.data && codeData.data.code) {
+          dashUrl = `https://prior.cg3.io/account?cli_code=${encodeURIComponent(codeData.data.code)}`;
+        }
+      } catch { /* fall through */ }
+      const cp = require("child_process");
+      if (process.platform === "win32") {
+        cp.execSync(`start "" "${dashUrl}"`, { shell: "cmd.exe", stdio: "ignore" });
+      } else if (process.platform === "darwin") {
+        cp.spawn("open", [dashUrl], { detached: true, stdio: "ignore" }).unref();
+      } else {
+        cp.spawn("xdg-open", [dashUrl], { detached: true, stdio: "ignore" }).unref();
+      }
+    }
   }
 }
 
@@ -779,8 +495,6 @@ async function resolveAuth(args, deps, nonInteractive, dryRun) {
 
   // 3. Check existing credentials
   const config = loadConfig();
-
-  // 3a. Existing API key — validate it
   const existingKey = process.env.PRIOR_API_KEY || config?.apiKey;
   if (existingKey) {
     const check = await api("GET", "/v1/agents/me", null, existingKey);
@@ -789,15 +503,13 @@ async function resolveAuth(args, deps, nonInteractive, dryRun) {
       return existingKey;
     }
     warn("Existing API key invalid (401)");
-    // Fall through to re-auth
   }
 
-  // 3b. Existing OAuth tokens — try to get API key via cli-key endpoint
+  // 3b. Existing OAuth tokens
   if (config?.tokens?.access_token) {
     const refreshed = await deps.refreshTokenIfNeeded?.();
     const jwt = refreshed || config.tokens.access_token;
 
-    // Try to get/generate API key
     const cliKeyRes = await api("POST", "/v1/agents/cli-key", { regenerate: false }, jwt);
     if (cliKeyRes.ok && cliKeyRes.data?.apiKey) {
       const key = cliKeyRes.data.apiKey;
@@ -808,17 +520,15 @@ async function resolveAuth(args, deps, nonInteractive, dryRun) {
       return key;
     }
 
-    // 409: key already exists but we don't have it locally
     if (cliKeyRes.error?.code === "KEY_EXISTS") {
       if (nonInteractive) {
         fail("API key exists on server but not locally. Use --api-key to provide it.");
         return null;
       }
 
-      log(`\n  You already have an API key from a previous setup.`);
-      log(`    [1] Generate a new key (recommended)`);
-      log(`        → Your old key will stop working.`);
-      log(`    [2] Enter your existing key`);
+      log(`\n  An API key already exists for this account.`);
+      log(`    [1] Generate a fresh key (old key will stop working)`);
+      log(`    [2] Enter your existing key manually`);
       log(`        → Find at: https://prior.cg3.io/account`);
       const choice = await prompt("  Choice [1]: ");
 
@@ -833,7 +543,6 @@ async function resolveAuth(args, deps, nonInteractive, dryRun) {
         return null;
       }
 
-      // Default: regenerate
       const regenRes = await api("POST", "/v1/agents/cli-key", { regenerate: true }, jwt);
       if (regenRes.ok && regenRes.data?.apiKey) {
         const key = regenRes.data.apiKey;
@@ -848,19 +557,19 @@ async function resolveAuth(args, deps, nonInteractive, dryRun) {
     }
   }
 
-  // 4. --skip-auth: use whatever we have
+  // 4. --skip-auth
   if (args.skipAuth) {
     fail("No valid credentials found. Cannot skip auth.");
     return null;
   }
 
-  // 5. Non-interactive with no creds
+  // 5. Non-interactive
   if (nonInteractive) {
     fail("No credentials found. Use --api-key or --api-key-file.");
     return null;
   }
 
-  // 6. Interactive: offer OAuth or API key paste
+  // 6. Interactive OAuth
   log(`\n  No Prior credentials found.`);
   log(`    [1] Log in with browser (GitHub/Google) — recommended`);
   log(`    [2] Enter API key manually`);
@@ -877,11 +586,9 @@ async function resolveAuth(args, deps, nonInteractive, dryRun) {
     return null;
   }
 
-  // OAuth flow — reuse existing login, then get API key
   log("  Opening browser for authentication...");
   await doOAuthLogin();
 
-  // After OAuth, try to get API key
   const postOauthConfig = loadConfig();
   if (postOauthConfig?.tokens?.access_token) {
     const jwt = postOauthConfig.tokens.access_token;
@@ -896,16 +603,14 @@ async function resolveAuth(args, deps, nonInteractive, dryRun) {
       return key;
     }
 
-    // 409 — same handling as above
     if (cliKeyRes.error?.code === "KEY_EXISTS") {
-      log(`\n  You already have an API key. Generating a new one...`);
       const regenRes = await api("POST", "/v1/agents/cli-key", { regenerate: true }, jwt);
       if (regenRes.ok && regenRes.data?.apiKey) {
         const key = regenRes.data.apiKey;
         const cfg = loadConfig() || {};
         cfg.apiKey = key;
         if (!dryRun) saveConfig(cfg);
-        ok("New API key generated");
+        ok("API key retrieved");
         return key;
       }
     }
@@ -917,13 +622,12 @@ async function resolveAuth(args, deps, nonInteractive, dryRun) {
 
 // ─── Update Mode ─────────────────────────────────────────────
 
-async function runUpdate(args, deps, platforms, transport, nonInteractive, dryRun) {
+async function runUpdate(args, deps, equip, platforms, transport, nonInteractive, dryRun) {
   const { VERSION, API_URL, loadConfig, saveConfig, api } = deps;
 
   log(`\n${BOLD}Prior Update${RESET}`);
   log("============\n");
 
-  // Validate auth
   log("Checking credentials...");
   let apiKey = process.env.PRIOR_API_KEY || loadConfig()?.apiKey;
 
@@ -938,11 +642,10 @@ async function runUpdate(args, deps, platforms, transport, nonInteractive, dryRu
         fail("Could not restore authentication.");
         process.exit(1);
       }
-      // Update all platform MCP configs with new key
       log("\nUpdating MCP configs with new key...");
       for (const p of platforms) {
         try {
-          updateMcpKey(p, apiKey, transport);
+          equip.updateMcpKey(p, apiKey, transport);
           ok(`${platformName(p.platform)} (${p.configPath.replace(os.homedir(), "~")})`);
         } catch (e) {
           fail(`${platformName(p.platform)}: ${e.message}`);
@@ -957,11 +660,9 @@ async function runUpdate(args, deps, platforms, transport, nonInteractive, dryRu
     }
   }
 
-  // Update rules
   log("\nUpdating behavioral rules...");
-  const bundledRules = getBundledRules();
   for (const p of platforms) {
-    const result = installRules(p, bundledRules, VERSION, dryRun);
+    const result = equip.installRules(p, { dryRun });
     if (result.action === "skipped") {
       ok(`${platformName(p.platform)}: No changes needed`);
     } else if (result.action === "updated") {
@@ -970,23 +671,25 @@ async function runUpdate(args, deps, platforms, transport, nonInteractive, dryRu
       ok(`${platformName(p.platform)}: Rules added`);
     } else if (result.action === "clipboard") {
       info(`${platformName(p.platform)}: Updated rules copied to clipboard`);
-      log(`    → Paste in: Cursor > Settings > Rules`);
+      if (p.platform === "vscode") {
+        log(`    → Paste in: .github/copilot-instructions.md`);
+      } else {
+        log(`    → Paste in: Cursor > Settings > Rules`);
+      }
     }
 
-    // Update skill for Claude Code
     if (p.platform === "claude-code") {
       installSkill(p, dryRun);
     }
   }
 
-  // Check MCP configs are still correct
   log("\nUpdating MCP config...");
   for (const p of platforms) {
-    if (readMcpEntry(p.configPath, p.rootKey)) {
+    if (equip.readMcp(p)) {
       ok(`${platformName(p.platform)}: No changes needed`);
     } else {
       try {
-        installMcp(p, apiKey, transport, dryRun);
+        equip.installMcp(p, apiKey, { transport, dryRun });
         ok(`${platformName(p.platform)}: MCP config restored`);
       } catch (e) {
         fail(`${platformName(p.platform)}: ${e.message}`);
@@ -1002,13 +705,13 @@ async function runUpdate(args, deps, platforms, transport, nonInteractive, dryRu
 
 // ─── Rekey Mode ──────────────────────────────────────────────
 
-async function runRekey(args, deps, platforms, transport, nonInteractive, dryRun) {
+async function runRekey(args, deps, equip, platforms, transport, nonInteractive, dryRun) {
   const { VERSION, API_URL, loadConfig, saveConfig, api } = deps;
 
   log(`\n${BOLD}Prior Rekey${RESET}`);
   log("===========\n");
 
-  const configured = platforms.filter(p => readMcpEntry(p.configPath, p.rootKey));
+  const configured = platforms.filter(p => equip.readMcp(p));
   log("Detecting configured platforms...");
   for (const p of configured) ok(`${platformName(p.platform)} (${transport}, ${p.configPath.replace(os.homedir(), "~")})`);
   for (const p of platforms.filter(pp => !configured.includes(pp))) {
@@ -1020,7 +723,6 @@ async function runRekey(args, deps, platforms, transport, nonInteractive, dryRun
     process.exit(1);
   }
 
-  // Get new key
   let apiKey;
   if (args.apiKey) {
     log("\nValidating provided key...");
@@ -1040,7 +742,6 @@ async function runRekey(args, deps, platforms, transport, nonInteractive, dryRun
     }
     ok(`Key valid (${check.data.agentId})`);
   } else {
-    // OAuth → regenerate
     log("\nGenerating new API key...");
     apiKey = await resolveAuth({ ...args, skipAuth: false }, deps, nonInteractive, dryRun);
     if (!apiKey) {
@@ -1048,7 +749,6 @@ async function runRekey(args, deps, platforms, transport, nonInteractive, dryRun
       process.exit(1);
     }
 
-    // For rekey, we always regenerate
     const config = loadConfig();
     if (config?.tokens?.access_token) {
       const regenRes = await api("POST", "/v1/agents/cli-key", { regenerate: true }, config.tokens.access_token);
@@ -1062,7 +762,6 @@ async function runRekey(args, deps, platforms, transport, nonInteractive, dryRun
     }
   }
 
-  // Confirm
   if (!nonInteractive && !args.apiKey && !args.apiKeyFile) {
     warn("This replaces your previous API key.");
     log("    Any other integrations using the old key will stop working.");
@@ -1073,18 +772,16 @@ async function runRekey(args, deps, platforms, transport, nonInteractive, dryRun
     }
   }
 
-  // Update all configs
   log("\nUpdating MCP configs...");
   for (const p of configured) {
     try {
-      updateMcpKey(p, apiKey, transport);
+      equip.updateMcpKey(p, apiKey, transport);
       ok(`${platformName(p.platform)} (${p.configPath.replace(os.homedir(), "~")})`);
     } catch (e) {
       fail(`${platformName(p.platform)}: ${e.message}`);
     }
   }
 
-  // Save to config.json
   if (!dryRun) {
     const cfg = loadConfig() || {};
     cfg.apiKey = apiKey;
@@ -1100,11 +797,10 @@ async function runRekey(args, deps, platforms, transport, nonInteractive, dryRun
 
 // ─── Uninstall Mode ──────────────────────────────────────────
 
-async function runUninstall(args, dryRun, VERSION) {
-  log(`\n${BOLD}Prior Uninstall${RESET}`);
-  log("===============\n");
+async function runUninstall(args, equip, dryRun, VERSION) {
+  log(`\n${BOLD}Prior Uninstall${RESET}\n`);
 
-  let platforms = detectPlatforms();
+  let platforms = equip.detect();
   if (args.platform) {
     platforms = platforms.filter(p => p.platform === args.platform);
   }
@@ -1115,77 +811,95 @@ async function runUninstall(args, dryRun, VERSION) {
   }
 
   for (const p of platforms) {
-    const mcpRemoved = uninstallMcp(p, dryRun);
-    const rulesRemoved = uninstallRules(p, dryRun);
+    const mcpRemoved = equip.uninstallMcp(p, dryRun);
+    const rulesRemoved = equip.uninstallRules(p, dryRun);
     const skillRemoved = uninstallSkill(p, dryRun);
 
     if (mcpRemoved || rulesRemoved || skillRemoved) {
-      ok(`${platformName(p.platform)}: ${dryRun ? "would be " : ""}removed`);
-      if (mcpRemoved) log(`    MCP config removed`);
-      if (rulesRemoved) log(`    Behavioral rules removed`);
-      if (skillRemoved) log(`    Skill files removed`);
+      ok(`${platformName(p.platform)} ${dryRun ? "would be " : ""}removed`);
+      const items = [];
+      if (mcpRemoved) items.push("MCP config");
+      if (rulesRemoved) items.push("Behavioral rules");
+      if (skillRemoved) items.push("Skill files");
+      items.forEach((item, i) => {
+        const connector = i === items.length - 1 ? "└─" : "├─";
+        log(`      ${DIM}${connector}${RESET} ${item}`);
+      });
     } else {
-      log(`  ${DIM}— ${platformName(p.platform)}: nothing to remove${RESET}`);
+      log(`  ${DIM}— ${platformName(p.platform)}   nothing to remove${RESET}`);
     }
   }
 
-  log(`\n  Note: ~/.prior/config.json was NOT removed (contains your auth).`);
-  log(`  To remove: rm ~/.prior/config.json`);
-}
-
-// ─── Manual Platform Override ────────────────────────────────
-
-function createManualPlatform(platformId) {
-  const home = os.homedir();
-  const configs = {
-    "claude-code": {
-      configPath: path.join(home, ".claude.json"),
-      rulesPath: path.join(home, ".claude", "CLAUDE.md"),
-      skillDir: path.join(home, ".claude", "skills", "prior", "search"),
-      rootKey: "mcpServers",
-    },
-    cursor: {
-      configPath: path.join(home, ".cursor", "mcp.json"),
-      rulesPath: null,
-      rootKey: "mcpServers",
-    },
-    windsurf: {
-      configPath: path.join(home, ".codeium", "windsurf", "mcp_config.json"),
-      rulesPath: path.join(home, ".codeium", "windsurf", "memories", "global_rules.md"),
-      rootKey: "mcpServers",
-    },
-  };
-
-  const def = configs[platformId];
-  if (!def) {
-    throw new Error(`Unknown platform: ${platformId}. Supported: claude-code, cursor, windsurf`);
-  }
-
-  return { platform: platformId, version: "unknown", hasCli: false, existingMcp: null, ...def };
+  log(`\n  ${DIM}Note: ~/.prior/config.json was NOT removed (contains your auth).${RESET}`);
+  log(`  ${DIM}To remove: rm ~/.prior/config.json${RESET}`);
 }
 
 // ─── Exports ─────────────────────────────────────────────────
 
 module.exports = {
   cmdSetup,
+  createEquip,
+  // Re-export equip primitives for tests
   detectPlatforms,
-  buildMcpConfig,
-  buildHttpConfigWithAuth,
-  buildStdioConfig,
-  installMcp,
-  installMcpJson,
-  uninstallMcp,
-  updateMcpKey,
-  installRules,
-  uninstallRules,
+  buildHttpConfigWithAuth: (apiKey, platform) => buildHttpConfigWithAuth(MCP_URL, apiKey, platform),
+  buildStdioConfig: (apiKey) => {
+    if (process.platform === "win32") {
+      return { command: "cmd", args: ["/c", "npx", "-y", "@cg3/prior-mcp"], env: { PRIOR_API_KEY: apiKey } };
+    }
+    return { command: "npx", args: ["-y", "@cg3/prior-mcp"], env: { PRIOR_API_KEY: apiKey } };
+  },
+  buildMcpConfig: (apiKey, transport, platform) => {
+    if (transport === "stdio") {
+      if (process.platform === "win32") {
+        return { command: "cmd", args: ["/c", "npx", "-y", "@cg3/prior-mcp"], env: { PRIOR_API_KEY: apiKey } };
+      }
+      return { command: "npx", args: ["-y", "@cg3/prior-mcp"], env: { PRIOR_API_KEY: apiKey } };
+    }
+    return buildHttpConfigWithAuth(MCP_URL, apiKey, platform);
+  },
+  installMcpJson: (platform, mcpEntry, dryRun) => installMcpJson(platform, "prior", mcpEntry, dryRun),
+  uninstallMcp: (platform, dryRun) => uninstallMcp(platform, "prior", dryRun),
+  updateMcpKey: (platform, apiKey, transport) => {
+    const equip = createEquip();
+    return equip.updateMcpKey(platform, apiKey, transport);
+  },
+  installRules: (platform, bundledRules, currentVersion, dryRun) => {
+    // Platforms with directory-based rules get a standalone file; others append to existing file
+    const standaloneFile = (platform.platform === "cline" || platform.platform === "roo-code") ? "prior.md" : undefined;
+    return installRules(platform, {
+      content: bundledRules,
+      version: currentVersion,
+      marker: PRIOR_MARKER,
+      fileName: standaloneFile,
+      clipboardPlatforms: ["cursor", "vscode"],
+      dryRun,
+      copyToClipboard,
+    });
+  },
+  uninstallRules: (platform, dryRun) => {
+    const standaloneFile = (platform.platform === "cline" || platform.platform === "roo-code") ? "prior.md" : undefined;
+    return uninstallRules(platform, { marker: PRIOR_MARKER, fileName: standaloneFile, dryRun });
+  },
   installSkill,
   uninstallSkill,
   verifySetup,
-  parseRulesVersion,
+  parseRulesVersion: (content) => parseRulesVersion(content, PRIOR_MARKER),
   getBundledRules,
   createManualPlatform,
   copyToClipboard,
   sanitizeError,
-  PRIOR_MARKER_RE,
-  PRIOR_BLOCK_RE,
+  PRIOR_MARKER_RE: markerPatterns(PRIOR_MARKER).MARKER_RE,
+  PRIOR_BLOCK_RE: markerPatterns(PRIOR_MARKER).BLOCK_RE,
+  // Equip path helpers
+  getVsCodeMcpPath: require("@cg3/equip/platforms").getVsCodeMcpPath,
+  getVsCodeUserDir: require("@cg3/equip/platforms").getVsCodeUserDir,
+  getVsCodeVersion: () => {
+    try {
+      const out = execSync("code --version 2>&1", { encoding: "utf-8", timeout: 5000 });
+      const m = out.match(/(\d+\.\d+[\.\d]*)/);
+      return m ? m[1] : null;
+    } catch { return null; }
+  },
+  getClineConfigPath: require("@cg3/equip/platforms").getClineConfigPath,
+  getRooConfigPath: require("@cg3/equip/platforms").getRooConfigPath,
 };

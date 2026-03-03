@@ -20,8 +20,28 @@ RUN mkdir -p /home/testuser/.cursor && \
 # ─── Mock Windsurf ───────────────────────────────────────────
 # Simulates: windsurf dir exists, existing global rules with user content
 RUN mkdir -p /home/testuser/.codeium/windsurf/memories && \
-    echo '{"mcpServers":{}}' > /home/testuser/.codeium/windsurf/mcp_config.json && \
+    echo '{"mcpServers":{"notion":{"serverUrl":"https://mcp.notion.com/mcp","headers":{"Authorization":"Bearer fake"}}}}' > /home/testuser/.codeium/windsurf/mcp_config.json && \
     printf '# My Windsurf Rules\n\nPrefer functional style.\n' > /home/testuser/.codeium/windsurf/memories/global_rules.md
+
+# ─── Mock VS Code ────────────────────────────────────────────
+# Simulates: code CLI available, existing mcp.json with another server (uses "servers" root key)
+RUN mkdir -p /home/testuser/.config/Code/User && \
+    echo '{"servers":{"copilot-ext":{"type":"http","url":"https://copilot.example.com"}}}' > /home/testuser/.config/Code/User/mcp.json && \
+    printf '#!/bin/sh\necho "1.109.0"' > /usr/local/bin/code && chmod +x /usr/local/bin/code
+
+# ─── Mock Cline (VS Code extension) ─────────────────────────
+# Simulates: Cline globalStorage settings dir exists, existing MCP config, existing rules
+RUN mkdir -p /home/testuser/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings && \
+    echo '{"mcpServers":{"memory":{"url":"https://memory.example.com"}}}' > /home/testuser/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json && \
+    mkdir -p /home/testuser/Documents/Cline/Rules && \
+    printf '# My Cline Rules\n\nAlways use async/await.\n' > /home/testuser/Documents/Cline/Rules/my-rules.md
+
+# ─── Mock Roo Code (VS Code extension) ──────────────────────
+# Simulates: Roo Code globalStorage settings dir exists, existing MCP config, existing global rules
+RUN mkdir -p /home/testuser/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings && \
+    echo '{"mcpServers":{"db-tool":{"command":"npx","args":["-y","db-mcp"],"env":{"DB":"postgres"}}}}' > /home/testuser/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json && \
+    mkdir -p /home/testuser/.roo/rules && \
+    printf '# My Roo Rules\n\nUse dependency injection.\n' > /home/testuser/.roo/rules/my-rules.md
 
 # Fix ownership
 RUN chown -R testuser:testuser /home/testuser

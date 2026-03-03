@@ -1,6 +1,6 @@
 {
   "name": "@cg3/prior-node",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "CLI for Prior — knowledge exchange for AI agents. Search, contribute, and share solutions.",
   "bin": {
     "prior": "./bin/prior.js"
@@ -34,5 +34,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@cg3/equip": "^0.1.0"
   }
 }

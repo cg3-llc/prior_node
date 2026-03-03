@@ -17,6 +17,10 @@ const {
   parseRulesVersion,
   createManualPlatform,
   sanitizeError,
+  getVsCodeMcpPath,
+  getVsCodeUserDir,
+  getClineConfigPath,
+  getRooConfigPath,
   PRIOR_MARKER_RE,
   PRIOR_BLOCK_RE,
   getBundledRules,
@@ -48,11 +52,18 @@ function cleanupFile(p) {
 // ─── Config Generation ───────────────────────────────────────
 
 describe("MCP config generation", () => {
-  it("generates correct HTTP config with auth", () => {
-    const config = buildHttpConfigWithAuth("ask_test123");
+  it("generates correct HTTP config with auth (Claude/Cursor)", () => {
+    const config = buildHttpConfigWithAuth("ask_test123", "claude-code");
     assert.deepStrictEqual(config, {
-      type: "http",
       url: "https://api.cg3.io/mcp",
+      headers: { Authorization: "Bearer ask_test123" },
+    });
+  });
+
+  it("generates correct HTTP config with auth (Windsurf uses serverUrl)", () => {
+    const config = buildHttpConfigWithAuth("ask_test123", "windsurf");
+    assert.deepStrictEqual(config, {
+      serverUrl: "https://api.cg3.io/mcp",
       headers: { Authorization: "Bearer ask_test123" },
     });
   });
@@ -70,8 +81,8 @@ describe("MCP config generation", () => {
   });
 
   it("buildMcpConfig selects http by default", () => {
-    const config = buildMcpConfig("ask_test", "http");
-    assert.equal(config.type, "http");
+    const config = buildMcpConfig("ask_test", "http", "claude-code");
+    assert.equal(config.url, "https://api.cg3.io/mcp");
     assert.ok(config.headers);
   });
 
@@ -141,6 +152,75 @@ describe("MCP JSON installation", () => {
     cleanupFile(p.configPath);
     installMcpJson(p, buildHttpConfigWithAuth("ask_test"), true);
     assert.ok(!fs.existsSync(p.configPath), "file should not exist after dry run");
+  });
+
+  it("handles UTF-8 BOM in existing config file", () => {
+    const p = mockPlatform();
+    const BOM = "\uFEFF";
+    const existing = { mcpServers: { github: { url: "https://github.com/mcp" } } };
+    fs.writeFileSync(p.configPath, BOM + JSON.stringify(existing));
+    installMcpJson(p, buildHttpConfigWithAuth("ask_test", "claude-code"), false);
+    const written = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.ok(written.mcpServers.prior, "prior should be added");
+    assert.ok(written.mcpServers.github, "github should be preserved despite BOM");
+    assert.equal(written.mcpServers.github.url, "https://github.com/mcp");
+    cleanupFile(p.configPath);
+  });
+
+  it("preserves multiple existing servers across platforms", () => {
+    // Cursor-like config with multiple servers
+    const p = mockPlatform({ platform: "cursor" });
+    const existing = {
+      mcpServers: {
+        github: { url: "https://api.githubcopilot.com/mcp/" },
+        filesystem: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem"] },
+        sentry: { url: "https://mcp.sentry.dev/sse" },
+      },
+    };
+    fs.writeFileSync(p.configPath, JSON.stringify(existing));
+    installMcpJson(p, buildHttpConfigWithAuth("ask_test", "cursor"), false);
+    const written = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.equal(Object.keys(written.mcpServers).length, 4, "should have 4 servers total");
+    assert.ok(written.mcpServers.github, "github preserved");
+    assert.ok(written.mcpServers.filesystem, "filesystem preserved");
+    assert.ok(written.mcpServers.sentry, "sentry preserved");
+    assert.ok(written.mcpServers.prior, "prior added");
+    cleanupFile(p.configPath);
+  });
+
+  it("Windsurf config uses serverUrl not url", () => {
+    const p = mockPlatform({ platform: "windsurf" });
+    const existing = {
+      mcpServers: { notion: { serverUrl: "https://mcp.notion.com/mcp" } },
+    };
+    fs.writeFileSync(p.configPath, JSON.stringify(existing));
+    installMcpJson(p, buildHttpConfigWithAuth("ask_test", "windsurf"), false);
+    const written = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.ok(written.mcpServers.prior.serverUrl, "prior should use serverUrl for Windsurf");
+    assert.ok(!written.mcpServers.prior.url, "prior should NOT have url for Windsurf");
+    assert.ok(written.mcpServers.notion, "notion preserved");
+    cleanupFile(p.configPath);
+  });
+
+  it("preserves non-MCP fields in Claude Code config", () => {
+    const p = mockPlatform();
+    const existing = {
+      numStartups: 42,
+      autoUpdaterStatus: "enabled",
+      hasCompletedOnboarding: true,
+      projects: { "/some/path": { allowedTools: [] } },
+      mcpServers: { existing: { url: "https://example.com" } },
+    };
+    fs.writeFileSync(p.configPath, JSON.stringify(existing));
+    installMcpJson(p, buildHttpConfigWithAuth("ask_test", "claude-code"), false);
+    const written = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.equal(written.numStartups, 42, "numStartups preserved");
+    assert.equal(written.autoUpdaterStatus, "enabled", "autoUpdaterStatus preserved");
+    assert.equal(written.hasCompletedOnboarding, true, "onboarding preserved");
+    assert.ok(written.projects, "projects preserved");
+    assert.ok(written.mcpServers.existing, "existing server preserved");
+    assert.ok(written.mcpServers.prior, "prior added");
+    cleanupFile(p.configPath);
   });
 });
 
@@ -382,5 +462,147 @@ describe("MCP uninstall", () => {
     cleanupFile(p.configPath);
     const removed = uninstallMcp(p, false);
     assert.ok(!removed);
+  });
+});
+
+// ─── Phase 2: VS Code, Cline, Roo Code ──────────────────────
+
+describe("VS Code config generation", () => {
+  it("generates HTTP config with type field", () => {
+    const config = buildHttpConfigWithAuth("ask_test123", "vscode");
+    assert.deepStrictEqual(config, {
+      type: "http",
+      url: "https://api.cg3.io/mcp",
+      headers: { Authorization: "Bearer ask_test123" },
+    });
+  });
+
+  it("uses 'servers' root key (not mcpServers)", () => {
+    const p = mockPlatform({ platform: "vscode", rootKey: "servers" });
+    cleanupFile(p.configPath);
+    installMcpJson(p, buildHttpConfigWithAuth("ask_test", "vscode"), false);
+    const written = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.ok(written.servers, "should use 'servers' root key");
+    assert.ok(written.servers.prior, "should have 'prior' entry");
+    assert.equal(written.servers.prior.type, "http");
+    assert.ok(!written.mcpServers, "should NOT have mcpServers");
+    cleanupFile(p.configPath);
+  });
+
+  it("merges into existing VS Code config", () => {
+    const p = mockPlatform({ platform: "vscode", rootKey: "servers" });
+    fs.writeFileSync(p.configPath, JSON.stringify({
+      servers: { github: { type: "http", url: "https://github.example.com" } },
+    }));
+    installMcpJson(p, buildHttpConfigWithAuth("ask_test", "vscode"), false);
+    const written = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.ok(written.servers.prior);
+    assert.ok(written.servers.github, "existing server preserved");
+    cleanupFile(p.configPath);
+  });
+
+  it("createManualPlatform supports vscode", () => {
+    const p = createManualPlatform("vscode");
+    assert.equal(p.platform, "vscode");
+    assert.equal(p.rootKey, "servers");
+    assert.ok(p.configPath.includes("mcp.json"));
+    assert.equal(p.rulesPath, null);
+  });
+});
+
+describe("VS Code path helpers", () => {
+  it("getVsCodeUserDir returns platform-appropriate path", () => {
+    const dir = getVsCodeUserDir();
+    assert.ok(dir.includes("Code") && dir.includes("User"), `unexpected path: ${dir}`);
+  });
+
+  it("getVsCodeMcpPath returns mcp.json inside user dir", () => {
+    const p = getVsCodeMcpPath();
+    assert.ok(p.endsWith("mcp.json"));
+    assert.ok(p.includes("Code"));
+  });
+});
+
+describe("Cline config", () => {
+  it("uses mcpServers root key", () => {
+    const p = mockPlatform({ platform: "cline", rootKey: "mcpServers" });
+    cleanupFile(p.configPath);
+    installMcpJson(p, buildHttpConfigWithAuth("ask_test", "cline"), false);
+    const written = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.ok(written.mcpServers.prior);
+    assert.equal(written.mcpServers.prior.url, "https://api.cg3.io/mcp");
+    cleanupFile(p.configPath);
+  });
+
+  it("getClineConfigPath includes globalStorage path", () => {
+    const p = getClineConfigPath();
+    assert.ok(p.includes("saoudrizwan.claude-dev"), `unexpected: ${p}`);
+    assert.ok(p.includes("settings"), `should include settings dir: ${p}`);
+    assert.ok(p.endsWith("cline_mcp_settings.json"));
+  });
+
+  it("createManualPlatform supports cline", () => {
+    const p = createManualPlatform("cline");
+    assert.equal(p.platform, "cline");
+    assert.equal(p.rootKey, "mcpServers");
+    assert.ok(p.rulesPath.includes("Cline"));
+    assert.ok(p.rulesPath.includes("Rules"));
+  });
+
+  it("installs rules as standalone file", () => {
+    const rulesDir = path.join(os.tmpdir(), `prior-cline-rules-${Date.now()}`);
+    const p = mockPlatform({ platform: "cline", rulesPath: rulesDir });
+    const rules = getBundledRules();
+    const result = installRules(p, rules, "0.5.3", false);
+    assert.equal(result.action, "created");
+    const content = fs.readFileSync(path.join(rulesDir, "prior.md"), "utf-8");
+    assert.ok(PRIOR_MARKER_RE.test(content));
+    // Cleanup
+    try { fs.unlinkSync(path.join(rulesDir, "prior.md")); fs.rmdirSync(rulesDir); } catch {}
+  });
+});
+
+describe("Roo Code config", () => {
+  it("uses mcpServers root key", () => {
+    const p = mockPlatform({ platform: "roo-code", rootKey: "mcpServers" });
+    cleanupFile(p.configPath);
+    installMcpJson(p, buildHttpConfigWithAuth("ask_test", "roo-code"), false);
+    const written = JSON.parse(fs.readFileSync(p.configPath, "utf-8"));
+    assert.ok(written.mcpServers.prior);
+    cleanupFile(p.configPath);
+  });
+
+  it("getRooConfigPath includes globalStorage path", () => {
+    const p = getRooConfigPath();
+    assert.ok(p.includes("rooveterinaryinc.roo-cline"), `unexpected: ${p}`);
+    assert.ok(p.endsWith("cline_mcp_settings.json"));
+  });
+
+  it("createManualPlatform supports roo-code", () => {
+    const p = createManualPlatform("roo-code");
+    assert.equal(p.platform, "roo-code");
+    assert.equal(p.rootKey, "mcpServers");
+    assert.ok(p.rulesPath.includes(".roo"));
+    assert.ok(p.rulesPath.includes("rules"));
+  });
+
+  it("installs rules as standalone file", () => {
+    const rulesDir = path.join(os.tmpdir(), `prior-roo-rules-${Date.now()}`);
+    const p = mockPlatform({ platform: "roo-code", rulesPath: rulesDir });
+    const rules = getBundledRules();
+    const result = installRules(p, rules, "0.5.3", false);
+    assert.equal(result.action, "created");
+    const content = fs.readFileSync(path.join(rulesDir, "prior.md"), "utf-8");
+    assert.ok(PRIOR_MARKER_RE.test(content));
+    try { fs.unlinkSync(path.join(rulesDir, "prior.md")); fs.rmdirSync(rulesDir); } catch {}
+  });
+});
+
+describe("VS Code rules (clipboard)", () => {
+  it("returns clipboard action for VS Code", () => {
+    const p = mockPlatform({ platform: "vscode", rulesPath: null });
+    const rules = getBundledRules();
+    const result = installRules(p, rules, "0.5.3", true);
+    assert.equal(result.action, "clipboard");
   });
 });

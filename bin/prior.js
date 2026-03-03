@@ -9,7 +9,7 @@ const os = require("os");
 const http = require("http");
 const crypto = require("crypto");
 
-const VERSION = "0.5.3";
+const VERSION = "0.5.4";
 const API_URL = process.env.PRIOR_BASE_URL || "https://api.cg3.io";
 
 /** Expand [PRIOR:*] tokens to CLI command syntax */
@@ -773,7 +773,8 @@ This replaces the need to manually copy-paste API keys.`);
       const openBrowser = (url) => {
         const cp = require("child_process");
         if (process.platform === "win32") {
-          cp.spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
+          // Must use shell + quoted URL — cmd treats & as command separator
+          cp.execSync(`start "" "${url}"`, { shell: "cmd.exe", stdio: "ignore" });
         } else if (process.platform === "darwin") {
           cp.spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
         } else {

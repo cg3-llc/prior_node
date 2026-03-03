@@ -360,6 +360,353 @@ if should_run "08"; then
   fi
 fi
 
+# ─── Test 09: Phase 2 Detection ──────────────────────────────
+
+if should_run "09"; then
+  section "09: Phase 2 Platform Detection"
+
+  OUT=$(dcapture 'node -e "
+    const { detectPlatforms } = require(\"./bin/setup.js\");
+    const ps = detectPlatforms();
+    console.log(JSON.stringify(ps.map(p => ({ platform: p.platform, version: p.version, rootKey: p.rootKey, hasCli: p.hasCli }))));
+  "')
+
+  echo "$OUT" | grep -q '"vscode"' && pass "Detects VS Code" || fail "Detects VS Code" "not found"
+  echo "$OUT" | grep -q '"cline"' && pass "Detects Cline" || fail "Detects Cline" "not found"
+  echo "$OUT" | grep -q '"roo-code"' && pass "Detects Roo Code" || fail "Detects Roo Code" "not found"
+
+  # VS Code version
+  echo "$OUT" | grep -q '1.109.0' && pass "VS Code version detected" || fail "VS Code version" "not found"
+
+  # VS Code uses 'servers' root key
+  echo "$OUT" | python3 -c "import sys,json; ps=json.load(sys.stdin); vs=[p for p in ps if p['platform']=='vscode']; exit(0 if vs and vs[0]['rootKey']=='servers' else 1)" 2>/dev/null \
+    && pass "VS Code: uses 'servers' root key" || fail "VS Code: root key" "not 'servers'"
+
+  # Cline and Roo use 'mcpServers'
+  echo "$OUT" | python3 -c "import sys,json; ps=json.load(sys.stdin); cl=[p for p in ps if p['platform']=='cline']; exit(0 if cl and cl[0]['rootKey']=='mcpServers' else 1)" 2>/dev/null \
+    && pass "Cline: uses 'mcpServers' root key" || fail "Cline: root key" "not 'mcpServers'"
+  echo "$OUT" | python3 -c "import sys,json; ps=json.load(sys.stdin); rc=[p for p in ps if p['platform']=='roo-code']; exit(0 if rc and rc[0]['rootKey']=='mcpServers' else 1)" 2>/dev/null \
+    && pass "Roo Code: uses 'mcpServers' root key" || fail "Roo Code: root key" "not 'mcpServers'"
+fi
+
+# ─── Test 10: VS Code MCP Installation ──────────────────────
+
+if should_run "10"; then
+  section "10: VS Code MCP Installation"
+
+  OUT=$(dcapture 'node -e "
+    const { installMcpJson, buildHttpConfigWithAuth, detectPlatforms } = require(\"./bin/setup.js\");
+    const fs = require(\"fs\");
+    const ps = detectPlatforms();
+    const p = ps.find(x => x.platform === \"vscode\");
+    installMcpJson(p, buildHttpConfigWithAuth(\"ask_vscode_test\", \"vscode\"), false);
+    const data = JSON.parse(fs.readFileSync(p.configPath, \"utf-8\"));
+    console.log(JSON.stringify(data));
+  "')
+
+  # Uses "servers" root key, not "mcpServers"
+  echo "$OUT" | jq -e '.servers.prior' > /dev/null 2>&1 && pass "VS Code: prior added under 'servers'" || fail "VS Code: prior added" "missing"
+  echo "$OUT" | jq -e '.mcpServers' > /dev/null 2>&1 && fail "VS Code: has mcpServers (should not)" "unexpected key" || pass "VS Code: no mcpServers key"
+  echo "$OUT" | jq -e '.servers.prior.type == "http"' > /dev/null 2>&1 && pass "VS Code: type field is 'http'" || fail "VS Code: type field" "missing or wrong"
+  echo "$OUT" | jq -e '.servers.prior.url' > /dev/null 2>&1 && pass "VS Code: url field present" || fail "VS Code: url" "missing"
+  echo "$OUT" | jq -e '.servers["copilot-ext"]' > /dev/null 2>&1 && pass "VS Code: existing server preserved" || fail "VS Code: existing server" "clobbered"
+  echo "$OUT" | jq -r '.servers.prior.headers.Authorization' 2>/dev/null | grep -q "ask_vscode_test" \
+    && pass "VS Code: auth header set" || fail "VS Code: auth header" "wrong"
+fi
+
+# ─── Test 11: Cline MCP + Rules Installation ────────────────
+
+if should_run "11"; then
+  section "11: Cline MCP + Rules Installation"
+
+  OUT=$(dcapture 'node -e "
+    const { installMcpJson, buildHttpConfigWithAuth, installRules, getBundledRules, parseRulesVersion, detectPlatforms } = require(\"./bin/setup.js\");
+    const fs = require(\"fs\");
+    const path = require(\"path\");
+    const ps = detectPlatforms();
+    const p = ps.find(x => x.platform === \"cline\");
+
+    // MCP install
+    installMcpJson(p, buildHttpConfigWithAuth(\"ask_cline_test\"), false);
+    const mcpData = JSON.parse(fs.readFileSync(p.configPath, \"utf-8\"));
+
+    // Rules install (rulesPath is a directory for Cline; installRules adds prior.md)
+    const rules = getBundledRules();
+    const version = parseRulesVersion(rules);
+    const rResult = installRules(p, rules, version, false);
+    const rulesFile = path.join(p.rulesPath, \"prior.md\");
+    const rulesContent = fs.readFileSync(rulesFile, \"utf-8\");
+
+    // Check other rules files untouched
+    const otherRulesPath = path.join(require(\"os\").homedir(), \"Documents\", \"Cline\", \"Rules\", \"my-rules.md\");
+    const otherRules = fs.readFileSync(otherRulesPath, \"utf-8\");
+
+    console.log(JSON.stringify({
+      hasPriorMcp: !!mcpData.mcpServers?.prior,
+      existingServerPreserved: !!mcpData.mcpServers?.memory,
+      rulesAction: rResult.action,
+      rulesHasMarker: rulesContent.includes(\"prior:v\"),
+      rulesHasPrior: rulesContent.includes(\"ALWAYS search Prior\"),
+      otherRulesIntact: otherRules.includes(\"async/await\"),
+      rulesIsStandaloneFile: true,
+    }));
+  "')
+
+  echo "$OUT" | jq -e '.hasPriorMcp == true' > /dev/null 2>&1 && pass "Cline: prior MCP added" || fail "Cline: prior MCP" "missing"
+  echo "$OUT" | jq -e '.existingServerPreserved == true' > /dev/null 2>&1 && pass "Cline: existing server preserved" || fail "Cline: existing server" "clobbered"
+  echo "$OUT" | jq -e '.rulesAction == "created"' > /dev/null 2>&1 && pass "Cline: rules created" || fail "Cline: rules action" "$(echo $OUT | jq -r '.rulesAction')"
+  echo "$OUT" | jq -e '.rulesHasMarker == true' > /dev/null 2>&1 && pass "Cline: version marker present" || fail "Cline: marker" "missing"
+  echo "$OUT" | jq -e '.rulesHasPrior == true' > /dev/null 2>&1 && pass "Cline: Prior rules present" || fail "Cline: Prior rules" "missing"
+  echo "$OUT" | jq -e '.otherRulesIntact == true' > /dev/null 2>&1 && pass "Cline: other rules files untouched" || fail "Cline: other rules" "modified"
+  echo "$OUT" | jq -e '.rulesIsStandaloneFile == true' > /dev/null 2>&1 && pass "Cline: rules in standalone prior.md" || fail "Cline: rules path" "not standalone"
+fi
+
+# ─── Test 12: Roo Code MCP + Rules Installation ─────────────
+
+if should_run "12"; then
+  section "12: Roo Code MCP + Rules Installation"
+
+  OUT=$(dcapture 'node -e "
+    const { installMcpJson, buildHttpConfigWithAuth, installRules, getBundledRules, parseRulesVersion, detectPlatforms } = require(\"./bin/setup.js\");
+    const fs = require(\"fs\");
+    const path = require(\"path\");
+    const ps = detectPlatforms();
+    const p = ps.find(x => x.platform === \"roo-code\");
+
+    // MCP install
+    installMcpJson(p, buildHttpConfigWithAuth(\"ask_roo_test\"), false);
+    const mcpData = JSON.parse(fs.readFileSync(p.configPath, \"utf-8\"));
+
+    // Rules install (rulesPath is a directory for Roo Code; installRules adds prior.md)
+    const rules = getBundledRules();
+    const version = parseRulesVersion(rules);
+    const rResult = installRules(p, rules, version, false);
+    const rulesFile = path.join(p.rulesPath, \"prior.md\");
+    const rulesContent = fs.readFileSync(rulesFile, \"utf-8\");
+
+    // Check other rules files untouched
+    const otherRulesPath = path.join(require(\"os\").homedir(), \".roo\", \"rules\", \"my-rules.md\");
+    const otherRules = fs.readFileSync(otherRulesPath, \"utf-8\");
+
+    console.log(JSON.stringify({
+      hasPriorMcp: !!mcpData.mcpServers?.prior,
+      existingServerPreserved: !!mcpData.mcpServers?.[\"db-tool\"],
+      rulesAction: rResult.action,
+      rulesHasMarker: rulesContent.includes(\"prior:v\"),
+      rulesHasPrior: rulesContent.includes(\"ALWAYS search Prior\"),
+      otherRulesIntact: otherRules.includes(\"dependency injection\"),
+      rulesIsStandaloneFile: true,
+    }));
+  "')
+
+  echo "$OUT" | jq -e '.hasPriorMcp == true' > /dev/null 2>&1 && pass "Roo Code: prior MCP added" || fail "Roo Code: prior MCP" "missing"
+  echo "$OUT" | jq -e '.existingServerPreserved == true' > /dev/null 2>&1 && pass "Roo Code: existing server preserved" || fail "Roo Code: existing server" "clobbered"
+  echo "$OUT" | jq -e '.rulesAction == "created"' > /dev/null 2>&1 && pass "Roo Code: rules created" || fail "Roo Code: rules action" "$(echo $OUT | jq -r '.rulesAction')"
+  echo "$OUT" | jq -e '.rulesHasMarker == true' > /dev/null 2>&1 && pass "Roo Code: version marker present" || fail "Roo Code: marker" "missing"
+  echo "$OUT" | jq -e '.rulesHasPrior == true' > /dev/null 2>&1 && pass "Roo Code: Prior rules present" || fail "Roo Code: Prior rules" "missing"
+  echo "$OUT" | jq -e '.otherRulesIntact == true' > /dev/null 2>&1 && pass "Roo Code: other rules files untouched" || fail "Roo Code: other rules" "modified"
+  echo "$OUT" | jq -e '.rulesIsStandaloneFile == true' > /dev/null 2>&1 && pass "Roo Code: rules in standalone prior.md" || fail "Roo Code: rules path" "not standalone"
+fi
+
+# ─── Test 13: Phase 2 Full Roundtrip ─────────────────────────
+
+if should_run "13"; then
+  section "13: Phase 2 Full Install/Uninstall Roundtrip"
+
+  # VS Code roundtrip (uses 'servers' root key)
+  OUT=$(dcapture 'node -e "
+    const fs = require(\"fs\");
+    const { installMcpJson, uninstallMcp, buildHttpConfigWithAuth, detectPlatforms } = require(\"./bin/setup.js\");
+    const ps = detectPlatforms();
+    const p = ps.find(x => x.platform === \"vscode\");
+
+    // Install
+    installMcpJson(p, buildHttpConfigWithAuth(\"ask_rt_vs\", \"vscode\"), false);
+    const after = JSON.parse(fs.readFileSync(p.configPath, \"utf-8\"));
+    const hasPrior = !!after.servers?.prior;
+
+    // Uninstall
+    uninstallMcp(p, false);
+    let final = null;
+    try { final = JSON.parse(fs.readFileSync(p.configPath, \"utf-8\")); } catch {}
+    const priorGone = !final?.servers?.prior;
+    const existingPreserved = !!final?.servers?.[\"copilot-ext\"];
+
+    console.log(JSON.stringify({ hasPrior, priorGone, existingPreserved }));
+  "')
+
+  echo "$OUT" | jq -e '.hasPrior == true' > /dev/null 2>&1 && pass "VS Code roundtrip: installed" || fail "VS Code roundtrip: install" "failed"
+  echo "$OUT" | jq -e '.priorGone == true' > /dev/null 2>&1 && pass "VS Code roundtrip: uninstalled" || fail "VS Code roundtrip: uninstall" "still present"
+  echo "$OUT" | jq -e '.existingPreserved == true' > /dev/null 2>&1 && pass "VS Code roundtrip: existing preserved" || fail "VS Code roundtrip: existing" "lost"
+
+  # Cline roundtrip
+  OUT=$(dcapture 'node -e "
+    const fs = require(\"fs\");
+    const path = require(\"path\");
+    const { installMcpJson, uninstallMcp, installRules, uninstallRules, buildHttpConfigWithAuth, getBundledRules, parseRulesVersion, detectPlatforms } = require(\"./bin/setup.js\");
+    const ps = detectPlatforms();
+    const p = ps.find(x => x.platform === \"cline\");
+    const rules = getBundledRules();
+    const version = parseRulesVersion(rules);
+    const rulesFile = path.join(p.rulesPath, \"prior.md\");
+
+    // Install
+    installMcpJson(p, buildHttpConfigWithAuth(\"ask_rt_cl\"), false);
+    installRules(p, rules, version, false);
+    const mcpAfter = JSON.parse(fs.readFileSync(p.configPath, \"utf-8\"));
+    const rulesAfter = fs.readFileSync(rulesFile, \"utf-8\");
+
+    // Uninstall
+    uninstallMcp(p, false);
+    uninstallRules(p, false);
+    let mcpFinal = null;
+    try { mcpFinal = JSON.parse(fs.readFileSync(p.configPath, \"utf-8\")); } catch {}
+    let rulesFinal = null;
+    try { rulesFinal = fs.readFileSync(rulesFile, \"utf-8\"); } catch {}
+
+    console.log(JSON.stringify({
+      mcpInstalled: !!mcpAfter.mcpServers?.prior,
+      rulesInstalled: rulesAfter.includes(\"prior:v\"),
+      mcpRemoved: !mcpFinal?.mcpServers?.prior,
+      existingMcpPreserved: !!mcpFinal?.mcpServers?.memory,
+      rulesRemoved: !rulesFinal || !rulesFinal.includes(\"prior:v\"),
+    }));
+  "')
+
+  echo "$OUT" | jq -e '.mcpInstalled == true' > /dev/null 2>&1 && pass "Cline roundtrip: MCP installed" || fail "Cline roundtrip: MCP install" "failed"
+  echo "$OUT" | jq -e '.rulesInstalled == true' > /dev/null 2>&1 && pass "Cline roundtrip: rules installed" || fail "Cline roundtrip: rules install" "failed"
+  echo "$OUT" | jq -e '.mcpRemoved == true' > /dev/null 2>&1 && pass "Cline roundtrip: MCP removed" || fail "Cline roundtrip: MCP uninstall" "still present"
+  echo "$OUT" | jq -e '.existingMcpPreserved == true' > /dev/null 2>&1 && pass "Cline roundtrip: existing MCP preserved" || fail "Cline roundtrip: existing" "lost"
+  echo "$OUT" | jq -e '.rulesRemoved == true' > /dev/null 2>&1 && pass "Cline roundtrip: rules removed" || fail "Cline roundtrip: rules uninstall" "still present"
+
+  # Roo Code roundtrip
+  OUT=$(dcapture 'node -e "
+    const fs = require(\"fs\");
+    const path = require(\"path\");
+    const { installMcpJson, uninstallMcp, installRules, uninstallRules, buildHttpConfigWithAuth, getBundledRules, parseRulesVersion, detectPlatforms } = require(\"./bin/setup.js\");
+    const ps = detectPlatforms();
+    const p = ps.find(x => x.platform === \"roo-code\");
+    const rules = getBundledRules();
+    const version = parseRulesVersion(rules);
+    const rulesFile = path.join(p.rulesPath, \"prior.md\");
+
+    // Install
+    installMcpJson(p, buildHttpConfigWithAuth(\"ask_rt_roo\"), false);
+    installRules(p, rules, version, false);
+    const mcpAfter = JSON.parse(fs.readFileSync(p.configPath, \"utf-8\"));
+    const rulesAfter = fs.readFileSync(rulesFile, \"utf-8\");
+
+    // Uninstall
+    uninstallMcp(p, false);
+    uninstallRules(p, false);
+    let mcpFinal = null;
+    try { mcpFinal = JSON.parse(fs.readFileSync(p.configPath, \"utf-8\")); } catch {}
+    let rulesFinal = null;
+    try { rulesFinal = fs.readFileSync(rulesFile, \"utf-8\"); } catch {}
+
+    console.log(JSON.stringify({
+      mcpInstalled: !!mcpAfter.mcpServers?.prior,
+      rulesInstalled: rulesAfter.includes(\"prior:v\"),
+      mcpRemoved: !mcpFinal?.mcpServers?.prior,
+      existingMcpPreserved: !!mcpFinal?.mcpServers?.[\"db-tool\"],
+      rulesRemoved: !rulesFinal || !rulesFinal.includes(\"prior:v\"),
+    }));
+  "')
+
+  echo "$OUT" | jq -e '.mcpInstalled == true' > /dev/null 2>&1 && pass "Roo Code roundtrip: MCP installed" || fail "Roo Code roundtrip: MCP install" "failed"
+  echo "$OUT" | jq -e '.rulesInstalled == true' > /dev/null 2>&1 && pass "Roo Code roundtrip: rules installed" || fail "Roo Code roundtrip: rules install" "failed"
+  echo "$OUT" | jq -e '.mcpRemoved == true' > /dev/null 2>&1 && pass "Roo Code roundtrip: MCP removed" || fail "Roo Code roundtrip: MCP uninstall" "still present"
+  echo "$OUT" | jq -e '.existingMcpPreserved == true' > /dev/null 2>&1 && pass "Roo Code roundtrip: existing MCP preserved" || fail "Roo Code roundtrip: existing" "lost"
+  echo "$OUT" | jq -e '.rulesRemoved == true' > /dev/null 2>&1 && pass "Roo Code roundtrip: rules removed" || fail "Roo Code roundtrip: rules uninstall" "still present"
+fi
+
+# ─── Test 14: Phase 2 Rules Idempotency & Update ────────────
+
+if should_run "14"; then
+  section "14: Phase 2 Rules Idempotency & Update"
+
+  for PLATFORM in cline roo-code; do
+    OUT=$(dcapture "node -e \"
+      const fs = require('fs');
+      const path = require('path');
+      const { installRules, getBundledRules, parseRulesVersion, detectPlatforms } = require('./bin/setup.js');
+      const ps = detectPlatforms();
+      const p = ps.find(x => x.platform === '$PLATFORM');
+      const rules = getBundledRules();
+      const version = parseRulesVersion(rules);
+      const rulesFile = path.join(p.rulesPath, 'prior.md');
+
+      // First install
+      installRules(p, rules, version, false);
+      // Second install (same version) — should skip
+      const r2 = installRules(p, rules, version, false);
+      const content = fs.readFileSync(rulesFile, 'utf-8');
+      const markerCount = (content.match(/<!-- prior:v/g) || []).length;
+
+      // Simulate old version for update test
+      let modified = content.replace('prior:v' + version, 'prior:v0.0.1');
+      fs.writeFileSync(rulesFile, modified);
+      const r3 = installRules(p, rules, version, false);
+      const updated = fs.readFileSync(rulesFile, 'utf-8');
+      const hasNew = updated.includes('prior:v' + version);
+      const hasOld = updated.includes('prior:v0.0.1');
+      const updatedCount = (updated.match(/<!-- prior:v/g) || []).length;
+
+      console.log(JSON.stringify({
+        idempotentAction: r2.action,
+        markerCount,
+        updateAction: r3.action,
+        hasNew, hasOld, updatedCount,
+      }));
+    \"")
+
+    PNAME=$(echo "$PLATFORM" | sed 's/roo-code/Roo Code/' | sed 's/cline/Cline/')
+    echo "$OUT" | jq -e '.idempotentAction == "skipped"' > /dev/null 2>&1 && pass "$PNAME: idempotent (second run skipped)" || fail "$PNAME: idempotent" "$(echo $OUT | jq -r '.idempotentAction')"
+    echo "$OUT" | jq -e '.markerCount == 1' > /dev/null 2>&1 && pass "$PNAME: no duplicate markers" || fail "$PNAME: markers" "count=$(echo $OUT | jq '.markerCount')"
+    echo "$OUT" | jq -e '.updateAction == "updated"' > /dev/null 2>&1 && pass "$PNAME: version update works" || fail "$PNAME: update action" "$(echo $OUT | jq -r '.updateAction')"
+    echo "$OUT" | jq -e '.hasNew == true' > /dev/null 2>&1 && pass "$PNAME: new version present after update" || fail "$PNAME: new version" "missing"
+    echo "$OUT" | jq -e '.hasOld == false' > /dev/null 2>&1 && pass "$PNAME: old version removed after update" || fail "$PNAME: old version" "still present"
+    echo "$OUT" | jq -e '.updatedCount == 1' > /dev/null 2>&1 && pass "$PNAME: exactly one marker after update" || fail "$PNAME: marker count after update" "$(echo $OUT | jq '.updatedCount')"
+  done
+fi
+
+# ─── Test 15: VS Code Clipboard Rules ────────────────────────
+
+if should_run "15"; then
+  section "15: VS Code Rules (clipboard fallback)"
+
+  OUT=$(dcapture 'node -e "
+    const { installRules, getBundledRules, parseRulesVersion, detectPlatforms } = require(\"./bin/setup.js\");
+    const ps = detectPlatforms();
+    const p = ps.find(x => x.platform === \"vscode\");
+    const rules = getBundledRules();
+    const version = parseRulesVersion(rules);
+    const result = installRules(p, rules, version, true);
+    console.log(JSON.stringify({ action: result.action, rulesPath: p.rulesPath }));
+  "')
+
+  echo "$OUT" | jq -e '.action == "clipboard"' > /dev/null 2>&1 && pass "VS Code: rules action is clipboard" || fail "VS Code: rules action" "$(echo $OUT | jq -r '.action')"
+  echo "$OUT" | jq -e '.rulesPath == null' > /dev/null 2>&1 && pass "VS Code: no writable rules path" || fail "VS Code: rulesPath" "unexpected path"
+fi
+
+# ─── Test 16: Manual Platform Override (Phase 2) ────────────
+
+if should_run "16"; then
+  section "16: Manual Platform Override (Phase 2)"
+
+  for PLATFORM in vscode cline roo-code; do
+    OUT=$(dcapture "node -e \"
+      const { createManualPlatform } = require('./bin/setup.js');
+      const p = createManualPlatform('$PLATFORM');
+      console.log(JSON.stringify({ platform: p.platform, rootKey: p.rootKey, hasConfig: !!p.configPath }));
+    \"")
+
+    PNAME=$(echo "$PLATFORM" | sed 's/roo-code/Roo Code/' | sed 's/cline/Cline/' | sed 's/vscode/VS Code/')
+    echo "$OUT" | jq -e ".platform == \"$PLATFORM\"" > /dev/null 2>&1 && pass "$PNAME: manual override works" || fail "$PNAME: manual override" "wrong platform"
+    echo "$OUT" | jq -e '.hasConfig == true' > /dev/null 2>&1 && pass "$PNAME: has config path" || fail "$PNAME: config path" "missing"
+  done
+fi
+
 # ─── Cleanup ─────────────────────────────────────────────────
 
 docker volume rm "$VOLUME_NAME" 2>/dev/null || true
