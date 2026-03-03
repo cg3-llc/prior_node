@@ -312,7 +312,7 @@ if should_run "06"; then
   "')
 
   echo "$OUT" | jq -e '.command == "npx"' > /dev/null 2>&1 && pass "Stdio: command is npx (Linux)" || fail "Stdio: command" "$(echo $OUT | jq -r '.command')"
-  echo "$OUT" | jq -e '.args | length == 3' > /dev/null 2>&1 && pass "Stdio: correct args" || fail "Stdio: args" "$(echo $OUT | jq '.args')"
+  echo "$OUT" | jq -e '.args == ["-y", "@cg3/prior-mcp"]' > /dev/null 2>&1 && pass "Stdio: correct args" || fail "Stdio: args" "$(echo $OUT | jq -c '.args')"
   echo "$OUT" | jq -e '.env.PRIOR_API_KEY == "ask_stdio_test"' > /dev/null 2>&1 && pass "Stdio: API key in env" || fail "Stdio: env" "missing"
 fi
 
