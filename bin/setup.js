@@ -233,7 +233,10 @@ Examples:
 
   let platforms = equip.detect();
   let equipVersion = "unknown";
-  try { equipVersion = require("@cg3/equip/package.json").version; } catch {}
+  try {
+    const equipDir = path.dirname(require.resolve("@cg3/equip"));
+    equipVersion = JSON.parse(fs.readFileSync(path.join(equipDir, "package.json"), "utf-8")).version;
+  } catch {}
 
   log(`  OS         ${process.platform} ${os.arch()}`);
   log(`  Node       ${process.version}`);
