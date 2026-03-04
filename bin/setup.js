@@ -192,7 +192,7 @@ Detects your environment, authenticates, configures MCP, and installs
 behavioral rules so your agents start using Prior automatically.
 
 Options:
-  --platform <name>      Target: claude-code, cursor, windsurf, vscode, cline, roo-code
+  --platform <name>      Target: claude-code, cursor, windsurf, vscode, cline, roo-code, junie
   --transport http|stdio Transport (default: http)
   --api-key <key>        Use this API key (skips OAuth)
   --api-key-file <path>  Read API key from file (- for stdin)
@@ -255,7 +255,7 @@ Examples:
 
   if (platforms.length === 0) {
     fail("No supported AI coding tools detected.");
-    log(`\n  Install one of: Claude Code, Cursor, Windsurf, VS Code, Cline, Roo Code`);
+    log(`\n  Install one of: Claude Code, Cursor, Windsurf, VS Code, Cline, Roo Code, Junie`);
     log(`  Or specify manually: prior setup --platform claude-code`);
     process.exit(1);
   }
