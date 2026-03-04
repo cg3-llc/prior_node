@@ -20,6 +20,7 @@ const {
   buildStdioConfig,
   buildHttpConfig,
   installMcpJson,
+  installMcpToml,
   uninstallMcp,
   updateMcpKey,
   installRules,
@@ -343,7 +344,7 @@ Examples:
       } else if (rResult.action === "skipped") {
         ok(`${platformName(p.platform)}   Rules already up to date`);
       } else {
-        const rulesFile = p.rulesPath ? p.rulesPath.replace(os.homedir(), "~") : "rules file";
+        const rulesFile = p.rulesPath ? p.rulesPath.replace(os.homedir(), "~").replace(/\\/g, "/") : "rules file";
         ok(`${platformName(p.platform)}   Prior rules ${rResult.action} in ${rulesFile}`);
       }
 
@@ -374,21 +375,32 @@ Examples:
     }
 
     const v = await verifySetup(p, equip, apiKey, API_URL);
-    const checks = [];
-    if (v.mcp) checks.push("MCP ✓"); else { checks.push("MCP ✗"); allGood = false; }
-    if (v.rules) checks.push("Rules ✓");
-    if (p.platform === "claude-code" && v.skill) checks.push("Skill ✓");
-    if (v.api) checks.push("API ✓"); else checks.push("API ✗");
 
-    if (v.mcp) {
-      if (v.api) {
-        ok(`${platformName(p.platform)}   ${checks.join("  ")}`);
-      } else {
-        warn(`${platformName(p.platform)}   ${checks.join("  ")}  ${DIM}(API unreachable — will work once connected)${RESET}`);
-      }
+    const items = [];
+    items.push({ label: "MCP config", pass: v.mcp });
+    items.push({ label: "Behavioral rules", pass: v.rules });
+    if (p.platform === "claude-code" && v.skill) items.push({ label: "Skill files", pass: v.skill });
+    items.push({ label: "API connection", pass: v.api });
+
+    if (!v.mcp) allGood = false;
+    const allPass = items.every(i => i.pass);
+
+    if (allPass) {
+      ok(platformName(p.platform));
+    } else if (v.mcp) {
+      warn(platformName(p.platform));
     } else {
-      fail(`${platformName(p.platform)}   ${checks.join("  ")}`);
-      log(`    → MCP config not found. Try: prior setup --platform ${p.platform}`);
+      fail(platformName(p.platform));
+    }
+    items.forEach((item, i) => {
+      const connector = i === items.length - 1 ? "└─" : "├─";
+      const icon = item.pass ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`;
+      log(`      ${DIM}${connector}${RESET} ${icon} ${item.label}`);
+    });
+    if (!v.mcp) {
+      log(`      ${DIM}→ MCP config not found. Try: prior setup --platform ${p.platform}${RESET}`);
+    } else if (!v.api) {
+      log(`      ${DIM}→ API unreachable — will work once connected${RESET}`);
     }
   }
 
@@ -586,8 +598,19 @@ async function resolveAuth(args, deps, nonInteractive, dryRun) {
     return null;
   }
 
-  log("  Opening browser for authentication...");
-  await doOAuthLogin();
+  const loginResult = await doOAuthLogin();
+
+  if (loginResult === false) {
+    // OAuth timed out — check if we have existing credentials
+    const existingConfig = loadConfig();
+    if (existingConfig?.apiKey) {
+      warn("Login timed out, but found existing credentials.");
+      ok(`Authenticated as ${existingConfig.agentId || "existing agent"}`);
+      return existingConfig.apiKey;
+    }
+    fail("Login timed out. Try again or use: prior setup --api-key-file <path>");
+    return null;
+  }
 
   const postOauthConfig = loadConfig();
   if (postOauthConfig?.tokens?.access_token) {
@@ -858,6 +881,7 @@ module.exports = {
     return buildHttpConfigWithAuth(MCP_URL, apiKey, platform);
   },
   installMcpJson: (platform, mcpEntry, dryRun) => installMcpJson(platform, "prior", mcpEntry, dryRun),
+  installMcpToml: (platform, mcpEntry, dryRun) => installMcpToml(platform, "prior", mcpEntry, dryRun),
   uninstallMcp: (platform, dryRun) => uninstallMcp(platform, "prior", dryRun),
   updateMcpKey: (platform, apiKey, transport) => {
     const equip = createEquip();

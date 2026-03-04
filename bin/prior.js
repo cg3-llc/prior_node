@@ -753,6 +753,7 @@ This replaces the need to manually copy-paste API keys.`);
         // Force-close the server (keep-alive connections prevent clean close)
         server.closeAllConnections();
         server.close();
+        clearTimeout(loginTimeout);
         resolve();
         return;
       }
@@ -760,6 +761,8 @@ This replaces the need to manually copy-paste API keys.`);
       res.writeHead(404);
       res.end();
     });
+
+    let loginTimeout;
 
     server.listen(0, "127.0.0.1", () => {
       const port = server.address().port;
@@ -784,12 +787,12 @@ This replaces the need to manually copy-paste API keys.`);
       openBrowser(authorizeUrl);
     });
 
-    // Timeout after 5 minutes
-    const loginTimeout = setTimeout(() => {
-      process.stderr.write("Login timed out after 5 minutes.\n");
+    // Timeout after 3 minutes
+    loginTimeout = setTimeout(() => {
+      process.stderr.write("Login timed out after 3 minutes.\n");
       server.close();
-      resolve();
-    }, 5 * 60 * 1000);
+      resolve(false);
+    }, 3 * 60 * 1000);
     loginTimeout.unref();  // Don't keep event loop alive
   });
 }

@@ -43,6 +43,22 @@ RUN mkdir -p /home/testuser/.config/Code/User/globalStorage/rooveterinaryinc.roo
     mkdir -p /home/testuser/.roo/rules && \
     printf '# My Roo Rules\n\nUse dependency injection.\n' > /home/testuser/.roo/rules/my-rules.md
 
+# ─── Mock Codex (OpenAI CLI) ────────────────────────────────
+# Simulates: codex CLI available, existing .codex dir with config.toml containing another MCP server,
+# existing AGENTS.md with user content
+RUN mkdir -p /home/testuser/.codex && \
+    printf '[mcp_servers.context7]\ncommand = "npx"\nargs = ["-y", "@upstash/context7-mcp"]\n' > /home/testuser/.codex/config.toml && \
+    printf '# My AGENTS.md\n\nAlways run tests before committing.\n' > /home/testuser/.codex/AGENTS.md && \
+    printf '#!/bin/sh\necho "codex 0.1.2025081200"' > /usr/local/bin/codex && chmod +x /usr/local/bin/codex
+
+# ─── Mock Gemini CLI (Google) ────────────────────────────────
+# Simulates: gemini CLI available, existing .gemini dir with settings.json containing another MCP server,
+# existing GEMINI.md with user content
+RUN mkdir -p /home/testuser/.gemini && \
+    echo '{"selectedAuthType":"gemini-api-key","theme":"Dracula","mcpServers":{"git":{"command":"uvx","args":["mcp-server-git"]}}}' > /home/testuser/.gemini/settings.json && \
+    printf '# My Gemini Rules\n\nPrefer TypeScript for all new code.\n' > /home/testuser/.gemini/GEMINI.md && \
+    printf '#!/bin/sh\necho "gemini-cli/1.0.3"' > /usr/local/bin/gemini && chmod +x /usr/local/bin/gemini
+
 # Fix ownership
 RUN chown -R testuser:testuser /home/testuser
 

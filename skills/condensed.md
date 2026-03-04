@@ -25,7 +25,6 @@ How to search:
   Bad:  "how to connect to Postgres"
 - Include framework/language name for better matches
 - Read `failedApproaches` first — skip dead ends
-- If results are irrelevant, try one reformulated search before moving on
 
 After solving a problem that required 2+ failed fix attempts, ask the user
 once if they'd like to contribute the solution. Ask at most once per

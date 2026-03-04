@@ -707,6 +707,213 @@ if should_run "16"; then
   done
 fi
 
+# ─── Test 17: Codex & Gemini Detection ──────────────────────
+
+if should_run "17"; then
+  section "17: Codex & Gemini Detection"
+
+  OUT=$(dcapture 'node -e "
+    const { detectPlatforms } = require(\"./bin/setup.js\");
+    const ps = detectPlatforms();
+    console.log(JSON.stringify(ps.map(p => ({ platform: p.platform, version: p.version, rootKey: p.rootKey, configFormat: p.configFormat, hasCli: p.hasCli }))));
+  "')
+
+  echo "$OUT" | grep -q '"codex"' && pass "Detects Codex" || fail "Detects Codex" "not found"
+  echo "$OUT" | grep -q '"gemini-cli"' && pass "Detects Gemini CLI" || fail "Detects Gemini CLI" "not found"
+
+  # Codex uses TOML format and mcp_servers root key
+  echo "$OUT" | python3 -c "import sys,json; ps=json.load(sys.stdin); cx=[p for p in ps if p['platform']=='codex']; exit(0 if cx and cx[0]['configFormat']=='toml' else 1)" 2>/dev/null \
+    && pass "Codex: uses TOML config format" || fail "Codex: config format" "not toml"
+  echo "$OUT" | python3 -c "import sys,json; ps=json.load(sys.stdin); cx=[p for p in ps if p['platform']=='codex']; exit(0 if cx and cx[0]['rootKey']=='mcp_servers' else 1)" 2>/dev/null \
+    && pass "Codex: uses 'mcp_servers' root key" || fail "Codex: root key" "not mcp_servers"
+  echo "$OUT" | python3 -c "import sys,json; ps=json.load(sys.stdin); cx=[p for p in ps if p['platform']=='codex']; exit(0 if cx and cx[0]['hasCli'] else 1)" 2>/dev/null \
+    && pass "Codex: CLI detected" || fail "Codex: CLI" "not detected"
+
+  # Gemini uses JSON format and mcpServers root key
+  echo "$OUT" | python3 -c "import sys,json; ps=json.load(sys.stdin); gm=[p for p in ps if p['platform']=='gemini-cli']; exit(0 if gm and gm[0]['configFormat']=='json' else 1)" 2>/dev/null \
+    && pass "Gemini CLI: uses JSON config format" || fail "Gemini CLI: config format" "not json"
+  echo "$OUT" | python3 -c "import sys,json; ps=json.load(sys.stdin); gm=[p for p in ps if p['platform']=='gemini-cli']; exit(0 if gm and gm[0]['rootKey']=='mcpServers' else 1)" 2>/dev/null \
+    && pass "Gemini CLI: uses 'mcpServers' root key" || fail "Gemini CLI: root key" "not mcpServers"
+  echo "$OUT" | python3 -c "import sys,json; ps=json.load(sys.stdin); gm=[p for p in ps if p['platform']=='gemini-cli']; exit(0 if gm and gm[0]['hasCli'] else 1)" 2>/dev/null \
+    && pass "Gemini CLI: CLI detected" || fail "Gemini CLI: CLI" "not detected"
+fi
+
+# ─── Test 18: Codex MCP + Rules Installation ────────────────
+
+if should_run "18"; then
+  section "18: Codex MCP + Rules Installation"
+
+  OUT=$(dcapture 'node -e "
+    const { installMcpToml, buildHttpConfigWithAuth, installRules, getBundledRules, parseRulesVersion, detectPlatforms } = require(\"./bin/setup.js\");
+    const fs = require(\"fs\");
+    const ps = detectPlatforms();
+    const p = ps.find(x => x.platform === \"codex\");
+
+    // MCP install (TOML)
+    const config = buildHttpConfigWithAuth(\"ask_codex_test\", \"codex\");
+    installMcpToml(p, config, false);
+    const toml = fs.readFileSync(p.configPath, \"utf-8\");
+
+    // Rules install
+    const rules = getBundledRules();
+    const version = parseRulesVersion(rules);
+    const rResult = installRules(p, rules, version, false);
+    const rulesContent = fs.readFileSync(p.rulesPath, \"utf-8\");
+
+    console.log(JSON.stringify({
+      hasPriorTable: toml.includes(\"[mcp_servers.prior]\"),
+      hasPriorUrl: toml.includes(\"api.cg3.io/mcp\"),
+      hasAuthHeader: toml.includes(\"ask_codex_test\"),
+      existingServerPreserved: toml.includes(\"[mcp_servers.context7]\"),
+      rulesAction: rResult.action,
+      rulesHasMarker: rulesContent.includes(\"prior:v\"),
+      rulesHasPrior: rulesContent.includes(\"ALWAYS search Prior\"),
+      originalRulesPreserved: rulesContent.includes(\"Always run tests before committing\"),
+    }));
+  "')
+
+  echo "$OUT" | jq -e '.hasPriorTable == true' > /dev/null 2>&1 && pass "Codex: prior MCP table added" || fail "Codex: prior MCP" "missing"
+  echo "$OUT" | jq -e '.hasPriorUrl == true' > /dev/null 2>&1 && pass "Codex: MCP URL present" || fail "Codex: URL" "missing"
+  echo "$OUT" | jq -e '.hasAuthHeader == true' > /dev/null 2>&1 && pass "Codex: auth header in TOML" || fail "Codex: auth" "missing"
+  echo "$OUT" | jq -e '.existingServerPreserved == true' > /dev/null 2>&1 && pass "Codex: existing server preserved" || fail "Codex: existing server" "clobbered"
+  echo "$OUT" | jq -e '.rulesAction == "created"' > /dev/null 2>&1 && pass "Codex: rules created" || fail "Codex: rules action" "$(echo $OUT | jq -r '.rulesAction')"
+  echo "$OUT" | jq -e '.rulesHasMarker == true' > /dev/null 2>&1 && pass "Codex: version marker present" || fail "Codex: marker" "missing"
+  echo "$OUT" | jq -e '.rulesHasPrior == true' > /dev/null 2>&1 && pass "Codex: Prior rules present" || fail "Codex: Prior rules" "missing"
+  echo "$OUT" | jq -e '.originalRulesPreserved == true' > /dev/null 2>&1 && pass "Codex: original AGENTS.md preserved" || fail "Codex: original rules" "lost"
+fi
+
+# ─── Test 19: Gemini CLI MCP + Rules Installation ───────────
+
+if should_run "19"; then
+  section "19: Gemini CLI MCP + Rules Installation"
+
+  OUT=$(dcapture 'node -e "
+    const { installMcpJson, buildHttpConfigWithAuth, installRules, getBundledRules, parseRulesVersion, detectPlatforms } = require(\"./bin/setup.js\");
+    const fs = require(\"fs\");
+    const ps = detectPlatforms();
+    const p = ps.find(x => x.platform === \"gemini-cli\");
+
+    // MCP install
+    installMcpJson(p, buildHttpConfigWithAuth(\"ask_gemini_test\", \"gemini-cli\"), false);
+    const data = JSON.parse(fs.readFileSync(p.configPath, \"utf-8\"));
+
+    // Rules install
+    const rules = getBundledRules();
+    const version = parseRulesVersion(rules);
+    const rResult = installRules(p, rules, version, false);
+    const rulesContent = fs.readFileSync(p.rulesPath, \"utf-8\");
+
+    console.log(JSON.stringify({
+      hasPriorMcp: !!data.mcpServers?.prior,
+      hasHttpUrl: data.mcpServers?.prior?.httpUrl?.includes(\"api.cg3.io\"),
+      hasAuth: data.mcpServers?.prior?.headers?.Authorization?.includes(\"ask_gemini_test\"),
+      existingServerPreserved: !!data.mcpServers?.git,
+      nonMcpSettingsPreserved: data.selectedAuthType === \"gemini-api-key\" && data.theme === \"Dracula\",
+      rulesAction: rResult.action,
+      rulesHasMarker: rulesContent.includes(\"prior:v\"),
+      rulesHasPrior: rulesContent.includes(\"ALWAYS search Prior\"),
+      originalRulesPreserved: rulesContent.includes(\"Prefer TypeScript for all new code\"),
+    }));
+  "')
+
+  echo "$OUT" | jq -e '.hasPriorMcp == true' > /dev/null 2>&1 && pass "Gemini CLI: prior MCP added" || fail "Gemini CLI: prior MCP" "missing"
+  echo "$OUT" | jq -e '.hasHttpUrl == true' > /dev/null 2>&1 && pass "Gemini CLI: httpUrl present" || fail "Gemini CLI: httpUrl" "missing"
+  echo "$OUT" | jq -e '.hasAuth == true' > /dev/null 2>&1 && pass "Gemini CLI: auth header set" || fail "Gemini CLI: auth" "missing"
+  echo "$OUT" | jq -e '.existingServerPreserved == true' > /dev/null 2>&1 && pass "Gemini CLI: existing server preserved" || fail "Gemini CLI: existing server" "clobbered"
+  echo "$OUT" | jq -e '.nonMcpSettingsPreserved == true' > /dev/null 2>&1 && pass "Gemini CLI: non-MCP settings preserved" || fail "Gemini CLI: settings" "lost"
+  echo "$OUT" | jq -e '.rulesAction == "created"' > /dev/null 2>&1 && pass "Gemini CLI: rules created" || fail "Gemini CLI: rules action" "$(echo $OUT | jq -r '.rulesAction')"
+  echo "$OUT" | jq -e '.rulesHasMarker == true' > /dev/null 2>&1 && pass "Gemini CLI: version marker present" || fail "Gemini CLI: marker" "missing"
+  echo "$OUT" | jq -e '.rulesHasPrior == true' > /dev/null 2>&1 && pass "Gemini CLI: Prior rules present" || fail "Gemini CLI: Prior rules" "missing"
+  echo "$OUT" | jq -e '.originalRulesPreserved == true' > /dev/null 2>&1 && pass "Gemini CLI: original GEMINI.md preserved" || fail "Gemini CLI: original rules" "lost"
+fi
+
+# ─── Test 20: Codex & Gemini Full Roundtrip ──────────────────
+
+if should_run "20"; then
+  section "20: Codex & Gemini Full Install/Uninstall Roundtrip"
+
+  # Codex roundtrip (TOML)
+  OUT=$(dcapture 'node -e "
+    const fs = require(\"fs\");
+    const { installMcpToml, uninstallMcp, installRules, uninstallRules, buildHttpConfigWithAuth, getBundledRules, parseRulesVersion, detectPlatforms } = require(\"./bin/setup.js\");
+    const ps = detectPlatforms();
+    const p = ps.find(x => x.platform === \"codex\");
+    const rules = getBundledRules();
+    const version = parseRulesVersion(rules);
+
+    // Install
+    installMcpToml(p, buildHttpConfigWithAuth(\"ask_rt_codex\", \"codex\"), false);
+    installRules(p, rules, version, false);
+    const tomlAfter = fs.readFileSync(p.configPath, \"utf-8\");
+    const rulesAfter = fs.readFileSync(p.rulesPath, \"utf-8\");
+
+    // Uninstall
+    uninstallMcp(p, false);
+    uninstallRules(p, false);
+    const tomlFinal = fs.readFileSync(p.configPath, \"utf-8\");
+    let rulesFinal = null;
+    try { rulesFinal = fs.readFileSync(p.rulesPath, \"utf-8\"); } catch {}
+
+    console.log(JSON.stringify({
+      mcpInstalled: tomlAfter.includes(\"[mcp_servers.prior]\"),
+      rulesInstalled: rulesAfter.includes(\"prior:v\"),
+      mcpRemoved: !tomlFinal.includes(\"[mcp_servers.prior]\"),
+      existingMcpPreserved: tomlFinal.includes(\"[mcp_servers.context7]\"),
+      rulesRemoved: !rulesFinal || !rulesFinal.includes(\"prior:v\"),
+      originalRulesPreserved: !rulesFinal || rulesFinal.includes(\"Always run tests\"),
+    }));
+  "')
+
+  echo "$OUT" | jq -e '.mcpInstalled == true' > /dev/null 2>&1 && pass "Codex roundtrip: MCP installed" || fail "Codex roundtrip: MCP install" "failed"
+  echo "$OUT" | jq -e '.rulesInstalled == true' > /dev/null 2>&1 && pass "Codex roundtrip: rules installed" || fail "Codex roundtrip: rules install" "failed"
+  echo "$OUT" | jq -e '.mcpRemoved == true' > /dev/null 2>&1 && pass "Codex roundtrip: MCP removed" || fail "Codex roundtrip: MCP uninstall" "still present"
+  echo "$OUT" | jq -e '.existingMcpPreserved == true' > /dev/null 2>&1 && pass "Codex roundtrip: existing MCP preserved" || fail "Codex roundtrip: existing" "lost"
+  echo "$OUT" | jq -e '.rulesRemoved == true' > /dev/null 2>&1 && pass "Codex roundtrip: rules removed" || fail "Codex roundtrip: rules uninstall" "still present"
+  echo "$OUT" | jq -e '.originalRulesPreserved == true' > /dev/null 2>&1 && pass "Codex roundtrip: original AGENTS.md preserved" || fail "Codex roundtrip: original" "lost"
+
+  # Gemini CLI roundtrip (JSON)
+  OUT=$(dcapture 'node -e "
+    const fs = require(\"fs\");
+    const { installMcpJson, uninstallMcp, installRules, uninstallRules, buildHttpConfigWithAuth, getBundledRules, parseRulesVersion, detectPlatforms } = require(\"./bin/setup.js\");
+    const ps = detectPlatforms();
+    const p = ps.find(x => x.platform === \"gemini-cli\");
+    const rules = getBundledRules();
+    const version = parseRulesVersion(rules);
+
+    // Install
+    installMcpJson(p, buildHttpConfigWithAuth(\"ask_rt_gemini\", \"gemini-cli\"), false);
+    installRules(p, rules, version, false);
+    const dataAfter = JSON.parse(fs.readFileSync(p.configPath, \"utf-8\"));
+    const rulesAfter = fs.readFileSync(p.rulesPath, \"utf-8\");
+
+    // Uninstall
+    uninstallMcp(p, false);
+    uninstallRules(p, false);
+    let dataFinal = null;
+    try { dataFinal = JSON.parse(fs.readFileSync(p.configPath, \"utf-8\")); } catch {}
+    let rulesFinal = null;
+    try { rulesFinal = fs.readFileSync(p.rulesPath, \"utf-8\"); } catch {}
+
+    console.log(JSON.stringify({
+      mcpInstalled: !!dataAfter.mcpServers?.prior,
+      rulesInstalled: rulesAfter.includes(\"prior:v\"),
+      mcpRemoved: !dataFinal?.mcpServers?.prior,
+      existingMcpPreserved: !!dataFinal?.mcpServers?.git,
+      nonMcpPreserved: dataFinal?.theme === \"Dracula\",
+      rulesRemoved: !rulesFinal || !rulesFinal.includes(\"prior:v\"),
+      originalRulesPreserved: !rulesFinal || rulesFinal.includes(\"Prefer TypeScript\"),
+    }));
+  "')
+
+  echo "$OUT" | jq -e '.mcpInstalled == true' > /dev/null 2>&1 && pass "Gemini roundtrip: MCP installed" || fail "Gemini roundtrip: MCP install" "failed"
+  echo "$OUT" | jq -e '.rulesInstalled == true' > /dev/null 2>&1 && pass "Gemini roundtrip: rules installed" || fail "Gemini roundtrip: rules install" "failed"
+  echo "$OUT" | jq -e '.mcpRemoved == true' > /dev/null 2>&1 && pass "Gemini roundtrip: MCP removed" || fail "Gemini roundtrip: MCP uninstall" "still present"
+  echo "$OUT" | jq -e '.existingMcpPreserved == true' > /dev/null 2>&1 && pass "Gemini roundtrip: existing MCP preserved" || fail "Gemini roundtrip: existing" "lost"
+  echo "$OUT" | jq -e '.nonMcpPreserved == true' > /dev/null 2>&1 && pass "Gemini roundtrip: non-MCP settings preserved" || fail "Gemini roundtrip: settings" "lost"
+  echo "$OUT" | jq -e '.rulesRemoved == true' > /dev/null 2>&1 && pass "Gemini roundtrip: rules removed" || fail "Gemini roundtrip: rules uninstall" "still present"
+  echo "$OUT" | jq -e '.originalRulesPreserved == true' > /dev/null 2>&1 && pass "Gemini roundtrip: original GEMINI.md preserved" || fail "Gemini roundtrip: original" "lost"
+fi
+
 # ─── Cleanup ─────────────────────────────────────────────────
 
 docker volume rm "$VOLUME_NAME" 2>/dev/null || true
