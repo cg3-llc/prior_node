@@ -359,20 +359,20 @@ Examples:
       if (rResult.action === "clipboard") {
         const copied = !dryRun;
         if (copied) {
-          warn(`${platformName(p.platform)}   Rules copied to clipboard — paste required`);
+          warn(`${platformName(p.platform)}   Instructions copied to clipboard — paste required`);
           if (p.platform === "vscode") {
             log(`    → Create .github/copilot-instructions.md in your project and paste`);
           } else {
             log(`    → Open Cursor > Settings (${process.platform === "darwin" ? "⌘" : "Ctrl"}+,) > Rules > Paste`);
           }
         } else {
-          info(`${platformName(p.platform)}   Rules would be copied to clipboard`);
+          info(`${platformName(p.platform)}   Instructions would be copied to clipboard`);
         }
       } else if (rResult.action === "skipped") {
-        ok(`${platformName(p.platform)}   Rules already up to date`);
+        ok(`${platformName(p.platform)}   Instructions already up to date`);
       } else {
         const rulesFile = p.rulesPath ? p.rulesPath.replace(os.homedir(), "~").replace(/\\/g, "/") : "rules file";
-        ok(`${platformName(p.platform)}   Prior instructions ${instructions.version} ${rResult.action} in ${rulesFile}`);
+        ok(`${platformName(p.platform)}   Prior instructions ${instructions.version} appended to ${rulesFile}`);
       }
 
       // Claude Code bonus: install skill
@@ -716,11 +716,11 @@ async function runUpdate(args, deps, equip, platforms, transport, nonInteractive
     if (result.action === "skipped") {
       ok(`${platformName(p.platform)}: No changes needed`);
     } else if (result.action === "updated") {
-      ok(`${platformName(p.platform)}: Rules updated to v${VERSION}`);
+      ok(`${platformName(p.platform)}: Instructions updated to v${VERSION}`);
     } else if (result.action === "created") {
-      ok(`${platformName(p.platform)}: Rules added`);
+      ok(`${platformName(p.platform)}: Instructions added`);
     } else if (result.action === "clipboard") {
-      info(`${platformName(p.platform)}: Updated rules copied to clipboard`);
+      info(`${platformName(p.platform)}: Updated instructions copied to clipboard`);
       if (p.platform === "vscode") {
         log(`    → Paste in: .github/copilot-instructions.md`);
       } else {

@@ -1,4 +1,4 @@
-<!-- prior:v0.5.5 -->
+<!-- prior:v0.6.0 -->
 ## Prior (Knowledge Exchange)
 
 **ALWAYS search Prior before attempting to solve a problem yourself.** Search
