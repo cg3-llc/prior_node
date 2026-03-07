@@ -29,6 +29,9 @@ const {
   markerPatterns,
   createManualPlatform,
   platformName,
+  installHooks,
+  uninstallHooks,
+  hasHooks,
   cli,
 } = require("@cg3/equip");
 
@@ -297,7 +300,7 @@ Examples:
   }
 
   // ── Step 1: Authentication ──
-  const totalSteps = 4;
+  const totalSteps = 5;
   step(1, totalSteps, "Authentication");
 
   let authMethod = "unknown";
@@ -397,8 +400,37 @@ Examples:
     }
   }
 
-  // ── Step 4: Verification ──
-  step(4, totalSteps, "Verification");
+  // ── Step 4: Hooks ──
+  step(4, totalSteps, "Hooks");
+  let hooksInstalled = false;
+
+  for (const p of platformResults) {
+    if (!p.mcpSuccess) continue;
+
+    if (equip.supportsHooks(p)) {
+      try {
+        const hookResult = equip.installHooks(p, { dryRun });
+        if (hookResult && hookResult.installed) {
+          ok(`${platformName(p.platform)}   ${hookResult.scripts.length} hooks ${dryRun ? "would be " : ""}installed`);
+          hookResult.scripts.forEach((s, i) => {
+            const connector = i === hookResult.scripts.length - 1 ? "└─" : "├─";
+            log(`      ${DIM}${connector}${RESET} ${s}`);
+          });
+          hooksInstalled = true;
+        }
+      } catch (e) {
+        fail(`${platformName(p.platform)}   Hooks: ${e.message}`);
+      }
+    }
+    // No output for platforms without hook support (clean install log)
+  }
+
+  if (!hooksInstalled && !dryRun) {
+    log(`  ${DIM}No platforms with hook support detected${RESET}`);
+  }
+
+  // ── Step 5: Verification ──
+  step(5, totalSteps, "Verification");
 
   let allGood = true;
   for (const p of platformResults) {
@@ -419,6 +451,7 @@ Examples:
     items.push({ label: "MCP config", pass: v.mcp });
     items.push({ label: "Behavioral rules", pass: v.rules });
     if (p.platform === "claude-code" && v.skill) items.push({ label: "Skill files", pass: v.skill });
+    if (equip.supportsHooks(p)) items.push({ label: "Hooks", pass: equip.hasHooks(p) });
     items.push({ label: "API connection", pass: v.api });
 
     if (!v.mcp) allGood = false;
@@ -881,13 +914,15 @@ async function runUninstall(args, equip, dryRun, VERSION) {
     const mcpRemoved = equip.uninstallMcp(p, dryRun);
     const rulesRemoved = equip.uninstallRules(p, dryRun);
     const skillRemoved = uninstallSkill(p, dryRun);
+    const hooksRemoved = equip.uninstallHooks(p, { dryRun });
 
-    if (mcpRemoved || rulesRemoved || skillRemoved) {
+    if (mcpRemoved || rulesRemoved || skillRemoved || hooksRemoved) {
       ok(`${platformName(p.platform)} ${dryRun ? "would be " : ""}removed`);
       const items = [];
       if (mcpRemoved) items.push("MCP config");
       if (rulesRemoved) items.push("Behavioral rules");
       if (skillRemoved) items.push("Skill files");
+      if (hooksRemoved) items.push("Hooks");
       items.forEach((item, i) => {
         const connector = i === items.length - 1 ? "└─" : "├─";
         log(`      ${DIM}${connector}${RESET} ${item}`);
