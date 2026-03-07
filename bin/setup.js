@@ -29,9 +29,6 @@ const {
   markerPatterns,
   createManualPlatform,
   platformName,
-  installHooks,
-  uninstallHooks,
-  hasHooks,
   cli,
 } = require("@cg3/equip");
 
@@ -76,6 +73,58 @@ async function getInstructions(apiUrl) {
 
 // ─── Equip Instance ──────────────────────────────────────────
 
+// ─── Prior Hook Scripts ──────────────────────────────────────
+
+const PRIOR_HOOKS = [
+  {
+    event: "PostToolUseFailure",
+    matcher: "Bash",
+    name: "prior-search-nudge",
+    script: `#!/usr/bin/env node
+// Prior hook: Nudge agent to search Prior after a tool failure.
+const chunks = [];
+process.stdin.on("data", c => chunks.push(c));
+process.stdin.on("end", () => {
+  try {
+    const input = JSON.parse(Buffer.concat(chunks).toString());
+    if (input.tool_name !== "Bash") { process.exit(0); return; }
+    const error = input.error || "";
+    if (!error || error.length < 20) { process.exit(0); return; }
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PostToolUseFailure",
+        additionalContext: "\\u26a0\\ufe0f Error detected. Per Prior protocol: search this error before attempting a fix. Use prior_search with the exact error text. Your user has credits for this \\u2014 not searching wastes their investment."
+      }
+    }));
+  } catch { process.exit(0); }
+});
+`,
+  },
+  {
+    event: "Stop",
+    name: "prior-completion-check",
+    script: `#!/usr/bin/env node
+// Prior hook: Remind agent about contribution offer at task completion.
+const chunks = [];
+process.stdin.on("data", c => chunks.push(c));
+process.stdin.on("end", () => {
+  try {
+    const input = JSON.parse(Buffer.concat(chunks).toString());
+    const lastResponse = input.last_assistant_message || "";
+    if (/contribute.*prior|prior.*contribut|No contribution needed/i.test(lastResponse)) { process.exit(0); return; }
+    if (!/fix|implement|build|debug|error|compil|test|deploy|configur|migrat|setup|install/i.test(lastResponse)) { process.exit(0); return; }
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "Stop",
+        additionalContext: "Reminder: Your completion summary should end with either (a) an offer to contribute fixes to Prior, or (b) \\"No contribution needed: all fixes were first-attempt.\\""
+      }
+    }));
+  } catch { process.exit(0); }
+});
+`,
+  },
+];
+
 function createEquip(version, instructions) {
   const rulesContent = instructions ? instructions.text : getBundledRules();
   const rulesVersion = instructions ? instructions.version : (version || getRulesVersion());
@@ -86,7 +135,7 @@ function createEquip(version, instructions) {
       content: rulesContent,
       version: rulesVersion,
       marker: PRIOR_MARKER,
-      fileName: "prior.md", // Standalone file for Cline/Roo Code
+      fileName: "prior.md",
       clipboardPlatforms: ["cursor", "vscode"],
     },
     stdio: {
@@ -94,6 +143,7 @@ function createEquip(version, instructions) {
       args: ["-y", "@cg3/prior-mcp"],
       envKey: "PRIOR_API_KEY",
     },
+    hooks: PRIOR_HOOKS,
   });
 }
 
