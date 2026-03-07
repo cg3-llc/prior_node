@@ -420,6 +420,8 @@ Examples:
         ok(`${platformName(p.platform)}   Prior instructions ${instructions.version} appended to ${rulesFile}`);
       }
 
+      p.rulesAction = rResult.action; // Track for setup report
+
       // Claude Code bonus: install skill
       if (p.platform === "claude-code") {
         installSkill(p, dryRun);
@@ -516,6 +518,7 @@ Examples:
       transport: p.transport,
       success: p.mcpSuccess,
       error: p.error,
+      rulesAction: p.rulesAction || undefined,
     })), instructions.version, {
       isFirstRun,
       setupDurationMs: Date.now() - setupStartTime,
