@@ -38,7 +38,7 @@
         "developer-tools"
     ],
     "author": "CG3, Inc.",
-    "license": "MIT",
+    "license": "FSL-1.1-ALv2",
     "homepage": "https://prior.cg3.io",
     "repository": {
         "type": "git",
